@@ -1,0 +1,245 @@
+import { z } from 'zod'
+import { loadProjectEnvFile } from './env-file.js'
+
+// Process environment values take precedence over backend/.env.
+loadProjectEnvFile()
+
+/**
+ * Local Vite origins that are always trusted in development. Vite serves on
+ * 5173 and falls forward to 5174 when that port is already taken, so both must
+ * work without editing configuration. These are never allowed in production.
+ */
+const DEV_LOOPBACK_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+] as const
+
+const LOOPBACK_HOSTNAMES = new Set([
+  'localhost',
+  '127.0.0.1',
+  '0.0.0.0',
+  '::1',
+  '[::1]',
+])
+
+/**
+ * Parses one configured browser origin.
+ *
+ * Only a scheme, host and optional port are accepted. Wildcards, paths,
+ * queries, fragments and embedded credentials are rejected because an origin
+ * allow-list that contains them cannot be compared safely with the browser's
+ * `Origin` header.
+ */
+function parseOrigin(value: string, label: string): URL {
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    throw new Error(`${label} must not be empty`)
+  }
+
+  if (trimmed.includes('*')) {
+    throw new Error(
+      `${label} must list explicit origins; wildcards are not allowed`,
+    )
+  }
+
+  let url: URL
+
+  try {
+    url = new URL(trimmed)
+  } catch {
+    throw new Error(
+      `${label} must be an absolute origin such as https://app.example.com`,
+    )
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${label} must use http or https`)
+  }
+
+  if (url.username || url.password) {
+    throw new Error(`${label} must not contain credentials`)
+  }
+
+  if (url.pathname !== '/' || url.search || url.hash) {
+    throw new Error(
+      `${label} must be an origin only, with no path, query or fragment`,
+    )
+  }
+
+  return url
+}
+
+/** Normalizes an origin to the exact value a browser sends in `Origin`. */
+export function normalizeOrigin(value: string, label = 'origin'): string {
+  return parseOrigin(value, label).origin
+}
+
+/**
+ * Production origins must be real HTTPS deployments. A localhost origin in a
+ * production allow-list would mean the deployed API still trusts a developer
+ * machine, so it is rejected loudly instead of silently accepted.
+ */
+function assertProductionOrigin(value: string, label: string): string {
+  const url = parseOrigin(value, label)
+
+  if (url.protocol !== 'https:') {
+    throw new Error(`${label} must use https in production`)
+  }
+
+  if (LOOPBACK_HOSTNAMES.has(url.hostname.toLowerCase())) {
+    throw new Error(
+      `${label} must be the deployed frontend origin, not a localhost address`,
+    )
+  }
+
+  return url.origin
+}
+
+export interface OriginConfiguration {
+  NODE_ENV: 'development' | 'test' | 'production'
+  CORS_ORIGINS?: string
+  FRONTEND_URL: string
+}
+
+const envSchema = z
+  .object({
+    NODE_ENV: z
+      .enum(['development', 'test', 'production'])
+      .default('development'),
+    PORT: z.coerce.number().int().min(1).max(65535).default(4000),
+    CORS_ORIGINS: z.string().trim().min(1).optional(),
+    FRONTEND_URL: z.url().default('http://localhost:5173'),
+    DATABASE_URL: z.string().trim().min(1).optional(),
+
+    // AUTH_SECRET also derives the AES-256-GCM key that encrypts optional
+    // platform-admin MFA secrets at rest. Development may fall back to a
+    // non-production key, but production must set it before MFA enrollment.
+    AUTH_SECRET: z.string().min(1).optional(),
+    AUTH_SESSION_TTL_MINUTES: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(60),
+    CALENDAR_SCHEDULER_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
+    CALENDAR_SCHEDULER_INTERVAL_MINUTES: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1440)
+      .default(60),
+    R2_ACCOUNT_ID: z.string().min(1).optional(),
+    R2_ACCESS_KEY_ID: z.string().min(1).optional(),
+    R2_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    R2_BUCKET_NAME: z.string().min(1).optional(),
+    // Reverse geocoding for the optional "detect my location" dashboard
+    // indicator. Coordinates are forwarded once per user request and never
+    // stored. The default provider is OpenStreetMap Nominatim, which needs no
+    // API key but does require an identifying User-Agent. Point
+    // REVERSE_GEOCODING_URL at a self-hosted Nominatim instance or another
+    // Nominatim-compatible service to avoid the public endpoint.
+    REVERSE_GEOCODING_URL: z
+      .url()
+      .default('https://nominatim.openstreetmap.org/reverse'),
+    REVERSE_GEOCODING_API_KEY: z.string().trim().min(1).optional(),
+    REVERSE_GEOCODING_USER_AGENT: z.string().trim().min(1).optional(),
+    PAYMENT_PROVIDER: z.string().min(1).optional(),
+    PAYMENT_SECRET_KEY: z.string().min(1).optional(),
+    PAYMENT_WEBHOOK_SECRET: z.string().min(1).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.NODE_ENV !== 'production') {
+      return
+    }
+
+    if (!value.CORS_ORIGINS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CORS_ORIGINS'],
+        message:
+          'CORS_ORIGINS is required in production so the API does not allow every origin.',
+      })
+    } else {
+      for (const [index, raw] of value.CORS_ORIGINS.split(',').entries()) {
+        if (!raw.trim()) {
+          continue
+        }
+
+        try {
+          assertProductionOrigin(raw, `CORS_ORIGINS[${index}]`)
+        } catch (error) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['CORS_ORIGINS'],
+            message: (error as Error).message,
+          })
+        }
+      }
+    }
+
+    try {
+      assertProductionOrigin(value.FRONTEND_URL, 'FRONTEND_URL')
+    } catch (error) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['FRONTEND_URL'],
+        message: (error as Error).message,
+      })
+    }
+  })
+
+const parsed = envSchema.safeParse(process.env)
+
+if (!parsed.success) {
+  const details = parsed.error.issues
+    .map((issue) => {
+      const field = issue.path.join('.') || 'environment'
+      return `- ${field}: ${issue.message}`
+    })
+    .join('\n')
+
+  throw new Error(`Invalid environment configuration:\n${details}`)
+}
+
+export const env = parsed.data
+
+/**
+ * Builds the exact origin allow-list used by CORS and the cookie CSRF guard.
+ *
+ * Development always trusts the local Vite ports (5173 and 5174) plus the
+ * configured `FRONTEND_URL`, so running the client on either port works without
+ * configuration drift. Production trusts only explicitly configured HTTPS
+ * origins and never includes a localhost fallback.
+ */
+export function getAllowedOriginsFor(
+  config: OriginConfiguration,
+): string[] {
+  const isProduction = config.NODE_ENV === 'production'
+  const normalize = (value: string, label: string) =>
+    isProduction
+      ? assertProductionOrigin(value, label)
+      : normalizeOrigin(value, label)
+
+  const origins = (config.CORS_ORIGINS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value, index) => normalize(value, `CORS_ORIGINS[${index}]`))
+
+  origins.push(normalize(config.FRONTEND_URL, 'FRONTEND_URL'))
+
+  if (!isProduction) {
+    origins.push(...DEV_LOOPBACK_ORIGINS)
+  }
+
+  return [...new Set(origins)]
+}
+
+export function getAllowedOrigins(): string[] {
+  return getAllowedOriginsFor(env)
+}

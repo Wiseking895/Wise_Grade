@@ -1,0 +1,61 @@
+{
+  "name": "gradely-backend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Wise Grade API - Smarter Reports. Better Learning.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "prebuild": "prisma generate",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "lint": "eslint .",
+    "pretypecheck": "prisma generate",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run tests/integration",
+    "prisma:generate": "prisma generate",
+    "prisma:validate": "prisma validate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:status": "prisma migrate status",
+    "phase6c:seed": "tsx scripts/phase6c-seed.ts",
+    "phase6c:serve": "tsx scripts/phase6c-serve.ts",
+    "phase6c:cleanup": "tsx scripts/phase6c-cleanup.ts",
+    "phase6c:report-fixtures": "tsx scripts/phase6c-report-fixtures.ts",
+    "admin:bootstrap": "tsx scripts/bootstrap-platform-admin.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1162.0",
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "^7.10.1",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "helmet": "^8.3.0",
+    "pdf-lib": "^1.17.1",
+    "pdfkit": "^0.20.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.19.2",
+    "@types/pdfkit": "^0.17.7",
+    "@types/supertest": "^7.2.1",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "pdf-to-img": "^7.0.2",
+    "prisma": "^7.10.1",
+    "supertest": "^7.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
+  }
+}

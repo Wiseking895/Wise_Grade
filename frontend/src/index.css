@@ -1,0 +1,145 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-gradely-navy: #174a9c;
+  --color-gradely-blue: #0785ef;
+  --color-gradely-green: #22b83d;
+  --color-gradely-gold: #f5aa00;
+  --color-gradely-white: #ffffff;
+  --color-gradely-light: #f7f9fc;
+  --color-gradely-text: #172033;
+  --color-gradely-muted: #64748b;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--color-gradely-light);
+    color: var(--color-gradely-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-gradely-blue);
+    outline-offset: 2px;
+  }
+
+  /*
+   * Data-table headings read horizontally. Body cells keep normal wrapping so
+   * long names and descriptions stay readable; tables that genuinely cannot
+   * fit are wrapped in an overflow-x-auto container.
+   */
+  thead th {
+    white-space: nowrap;
+  }
+
+  /* Page headings balance across lines instead of dropping single words. */
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background-color: color-mix(
+      in srgb,
+      var(--color-gradely-blue) 22%,
+      var(--color-gradely-white)
+    );
+    color: var(--color-gradely-text);
+  }
+}
+
+/*
+ * Printable SBA register.
+ *
+ * The interactive register is hidden in print and replaced by a read-only
+ * table so printed pages never contain form controls. A4 landscape suits the
+ * wide register while remaining a standard school-office paper size.
+ */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+  }
+
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-register {
+    display: block !important;
+    color: #172033;
+  }
+
+  .print-reset {
+    padding-left: 0 !important;
+  }
+
+  .print-main {
+    max-width: none !important;
+    padding: 0 !important;
+  }
+
+  .print-register table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;
+    font-size: 8pt;
+  }
+
+  /*
+   * The printed register intentionally uses compact, multi-line column
+   * headings, so it opts out of the horizontal-heading rule above.
+   */
+  .print-register thead th {
+    white-space: normal;
+  }
+
+  .print-register thead {
+    display: table-header-group;
+  }
+
+  .print-register tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .print-register th,
+  .print-register td {
+    border: 1px solid #475569;
+    padding: 2px 3px;
+    vertical-align: middle;
+    line-height: 1.2;
+  }
+
+  .print-register th {
+    background: #e8eef9 !important;
+    font-weight: 700;
+  }
+
+  .print-register h1 {
+    color: #174a9c;
+  }
+}

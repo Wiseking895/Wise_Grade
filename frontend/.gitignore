@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Tooling cache
+.vite/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/

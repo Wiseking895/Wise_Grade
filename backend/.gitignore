@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+
+# Private local report storage and rendered visual-test artifacts
+.storage/
+.artifacts/
+
+# Local environment and secret files
+.env
+.env.*
+!.env.example
+
+# Generated Prisma Client
+src/generated/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
