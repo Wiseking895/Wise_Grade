@@ -34,6 +34,9 @@ export const reportSettingsSchema = z
     emblemObjectKey: optionalObjectKey,
     crestObjectKey: optionalObjectKey,
     signatureObjectKey: optionalObjectKey,
+    emblemAssetId: uuid.nullable().optional(),
+    crestAssetId: uuid.nullable().optional(),
+    signatureAssetId: uuid.nullable().optional(),
     headteacherLabel: z
       .string()
       .trim()

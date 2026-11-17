@@ -1,9 +1,10 @@
 import { createApp } from './app.js'
 import type { CalendarService } from './calendar/service.js'
+import { startCalendarScheduler } from './calendar/scheduler.js'
 import {
-  startCalendarScheduler,
-  type CalendarSchedulerRunSummary,
-} from './calendar/scheduler.js'
+  notifyCalendarSchedulerFailure,
+  recordCalendarSchedulerRun,
+} from './calendar/scheduler-run.js'
 import { env } from './config/env.js'
 import type { PlatformOperationsRepository } from './platform/operations-repository.js'
 import type { PlatformNotifier } from './platform/notifications.js'
@@ -15,32 +16,21 @@ const platformOperations = app.locals
   .platformOperations as PlatformOperationsRepository
 const platformNotifier = app.locals.platformNotifier as PlatformNotifier
 
-async function recordSchedulerRun(
-  summary: CalendarSchedulerRunSummary,
+/**
+ * Local development uses a long-running interval scheduler. Serverless
+ * production never imports this file; it triggers the same shared runner
+ * through the protected `/api/internal/calendar` endpoint instead.
+ *
+ * Audit persistence and failure notification deliberately reuse the shared
+ * helpers so local and production history cannot drift apart.
+ */
+async function onCalendarSchedulerRun(
+  summary: Parameters<typeof recordCalendarSchedulerRun>[1],
 ): Promise<void> {
-  await platformOperations.recordSchedulerRun({
-    trigger: 'SCHEDULER',
-    status: summary.status,
-    startedAt: summary.startedAt,
-    completedAt: summary.completedAt,
-    durationMs: summary.durationMs,
-    schoolCount: summary.schoolCount,
-    failureCount: summary.failureCount,
-    message: summary.message,
-  })
+  await recordCalendarSchedulerRun(platformOperations, summary, 'SCHEDULER')
 
   if (summary.status === 'FAILED') {
-    await platformNotifier.notify({
-      type: 'CALENDAR_SCHEDULER_FAILED',
-      severity: 'CRITICAL',
-      title: 'Academic calendar scheduler run failed',
-      body:
-        summary.message ??
-        `The scheduler failed while processing ${summary.schoolCount} school(s).`,
-      entityType: 'SchedulerRun',
-      link: '/platform/health',
-      dedupeKey: `calendar-scheduler-failed:${summary.startedAt.toISOString()}`,
-    })
+    await notifyCalendarSchedulerFailure(platformNotifier, summary)
   }
 }
 
@@ -51,7 +41,7 @@ const stopCalendarScheduler =
         intervalMs: env.CALENDAR_SCHEDULER_INTERVAL_MINUTES * 60 * 1000,
         runImmediately: false,
         logger: (message) => console.log(message),
-        onRun: recordSchedulerRun,
+        onRun: onCalendarSchedulerRun,
       })
     : () => undefined
 

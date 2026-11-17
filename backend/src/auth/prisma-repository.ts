@@ -2,7 +2,9 @@ import { getPrismaClient } from '../lib/prisma.js'
 import type { Prisma } from '../generated/prisma/client.js'
 import {
   academicStartYearFor,
+  assessmentDeadlineFor,
   buildAcademicYearPlan,
+  examinationPeriodFor,
   initialTermLifecycles,
   todayInCalendar,
 } from '../calendar/logic.js'
@@ -323,6 +325,20 @@ export function createPrismaAuthRepository(): AuthRepository {
                         `${lifecycle.reportsPreparedAt}T00:00:00.000Z`,
                       )
                     : null,
+                  // Registration starts from the centrally approved plan. The
+                  // milestone columns are explicit from day one so correcting
+                  // one date never silently moves the others, and the term is
+                  // marked confirmed because its dates are official.
+                  assessmentDeadline: new Date(
+                    `${assessmentDeadlineFor(term.endsOn)}T00:00:00.000Z`,
+                  ),
+                  examinationStartsOn: new Date(
+                    `${examinationPeriodFor(term.endsOn).startsOn}T00:00:00.000Z`,
+                  ),
+                  examinationEndsOn: new Date(
+                    `${term.endsOn}T00:00:00.000Z`,
+                  ),
+                  datesConfirmedAt: now,
                 }
               }),
             },

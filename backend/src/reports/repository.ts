@@ -61,6 +61,13 @@ export interface ReportSettingsInput {
   emblemObjectKey?: string | null
   crestObjectKey?: string | null
   signatureObjectKey?: string | null
+  /**
+   * Preferred public identifiers. The service resolves these to private object
+   * keys so clients never need to know or send a storage key.
+   */
+  emblemAssetId?: string | null
+  crestAssetId?: string | null
+  signatureAssetId?: string | null
   headteacherLabel?: string
   rankingEnabled?: boolean
   tiePolicy?: ReportTiePolicy
@@ -68,6 +75,29 @@ export interface ReportSettingsInput {
   attendanceRequired?: boolean
   closingDate?: string | null
   reopeningDate?: string | null
+}
+
+/**
+ * Client-facing report settings. Attached branding is identified by its asset
+ * id; private object keys stay inside the backend.
+ */
+export interface PublicReportSettings {
+  id: string
+  schoolId: string
+  academicYearId: string
+  academicTermId: string
+  emblemAssetId: string | null
+  crestAssetId: string | null
+  signatureAssetId: string | null
+  headteacherLabel: string
+  rankingEnabled: boolean
+  tiePolicy: ReportTiePolicy
+  aggregatePolicy: ReportAggregatePolicy
+  attendanceRequired: boolean
+  closingDate: string | null
+  reopeningDate: string | null
+  createdAt: Date
+  updatedAt: Date
 }
 
 export interface ReportAssetRecord {
@@ -89,6 +119,28 @@ export interface ReportAssetCreateInput {
   byteSize: number
   checksum: string
   originalName: string
+}
+
+/**
+ * Client-facing view of a report asset. The internal `storageKey` must never
+ * leave the backend, matching the sanitisation already applied to report
+ * versions.
+ */
+export type PublicReportAsset = Omit<ReportAssetRecord, 'storageKey'>
+
+export function toPublicReportAsset(
+  asset: ReportAssetRecord,
+): PublicReportAsset {
+  return {
+    id: asset.id,
+    schoolId: asset.schoolId,
+    kind: asset.kind,
+    mimeType: asset.mimeType,
+    byteSize: asset.byteSize,
+    checksum: asset.checksum,
+    originalName: asset.originalName,
+    createdAt: asset.createdAt,
+  }
 }
 
 export interface ReportInputRecord {

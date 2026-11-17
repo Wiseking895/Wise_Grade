@@ -381,6 +381,39 @@ describe('report HTTP routes', () => {
     expect(uploaded.status).toBe(201)
     const assetId = uploaded.body.data.asset.id
 
+    // Internal object keys must never leave the backend.
+    expect(uploaded.body.data.asset).not.toHaveProperty('storageKey')
+
+    const listed = await adminAgent.get(`/api/schools/${schoolA}/reports/assets`)
+    expect(listed.status).toBe(200)
+    const listedAsset = listed.body.data.assets.find(
+      (asset: { id: string }) => asset.id === assetId,
+    )
+    expect(listedAsset).toBeDefined()
+    expect(listedAsset).not.toHaveProperty('storageKey')
+    expect(JSON.stringify(listed.body)).not.toContain('schools/')
+
+    const attached = await adminAgent
+      .put(`/api/schools/${schoolA}/reports/settings`)
+      .set('Origin', TEST_ORIGIN)
+      .send({
+        academicYearId: ids.yearId,
+        academicTermId: ids.termId,
+        crestAssetId: assetId,
+      })
+
+    expect(attached.status).toBe(200)
+    expect(attached.body.data.settings.crestAssetId).toBe(assetId)
+    expect(attached.body.data.settings).not.toHaveProperty('crestObjectKey')
+    expect(JSON.stringify(attached.body)).not.toContain('schools/')
+
+    const fetched = await adminAgent.get(
+      `/api/schools/${schoolA}/reports/settings?academicTermId=${ids.termId}`,
+    )
+    expect(fetched.status).toBe(200)
+    expect(fetched.body.data.settings.crestAssetId).toBe(assetId)
+    expect(fetched.body.data.settings).not.toHaveProperty('crestObjectKey')
+
     const file = await adminAgent.get(
       `/api/schools/${schoolA}/reports/assets/${assetId}/file`,
     )

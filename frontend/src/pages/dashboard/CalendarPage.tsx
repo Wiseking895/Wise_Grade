@@ -62,8 +62,16 @@ function DateItem({
 }
 
 function TermSummary({ term }: { term: CalendarTerm }) {
+  const confirmed = term.datesConfirmed
+
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div
+      className={`rounded-2xl border p-5 shadow-sm ${
+        confirmed
+          ? 'border-slate-200 bg-white'
+          : 'border-amber-300 bg-amber-50/60'
+      }`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-base font-bold text-gradely-navy">{term.name}</h3>
@@ -72,14 +80,26 @@ function TermSummary({ term }: { term: CalendarTerm }) {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Badge tone={TERM_STATUS_TONE[term.status]}>
-            {statusLabel(term.status)}
-          </Badge>
+          {confirmed ? (
+            <Badge tone={TERM_STATUS_TONE[term.status]}>
+              {statusLabel(term.status)}
+            </Badge>
+          ) : (
+            <Badge tone="warning">Dates awaiting confirmation</Badge>
+          )}
           <Badge tone={REPORT_STATUS_TONE[term.reportStatus]}>
             Reports: {statusLabel(term.reportStatus)}
           </Badge>
         </div>
       </div>
+
+      {!confirmed ? (
+        <p className="mt-4 rounded-xl border border-amber-300 bg-white p-3 text-sm text-amber-900">
+          The Platform Super Admin has not confirmed this term’s dates yet.
+          The dates shown are provisional and no term transition, assessment
+          deadline or examination period is official until confirmation.
+        </p>
+      ) : null}
 
       <dl className="mt-4 space-y-2">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -87,7 +107,7 @@ function TermSummary({ term }: { term: CalendarTerm }) {
             Assessment deadline
           </dt>
           <dd className="text-sm font-semibold whitespace-nowrap text-gradely-text">
-            {formatDate(term.assessmentDeadline)}
+            {confirmed ? formatDate(term.assessmentDeadline) : 'Pending confirmation'}
           </dd>
         </div>
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -95,8 +115,9 @@ function TermSummary({ term }: { term: CalendarTerm }) {
             Examination period
           </dt>
           <dd className="text-sm font-semibold whitespace-nowrap text-gradely-text">
-            {formatDate(term.examinationStartsOn)} –{' '}
-            {formatDate(term.examinationEndsOn)}
+            {confirmed
+              ? `${formatDate(term.examinationStartsOn)} – ${formatDate(term.examinationEndsOn)}`
+              : 'Pending confirmation'}
           </dd>
         </div>
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -181,12 +202,13 @@ export default function CalendarPage() {
                 className="mt-0.5 size-4 shrink-0 text-gradely-blue"
               />
               <div>
-                <p className="font-semibold">Managed automatically</p>
+                <p className="font-semibold">Centrally managed</p>
                 <p className="mt-1 text-gradely-muted">
-                  Terms open and close on the official Ghana calendar. Reports
-                  are prepared before a term closes, and the next academic year
-                  is initialised after Term 3. Calendar dates are not edited
-                  from the school workspace.
+                  The Platform Super Admin configures academic years, terms,
+                  assessment deadlines and examination periods. Terms open and
+                  close on the official Ghana calendar, and reports are prepared
+                  before a term closes. Calendar dates cannot be edited from the
+                  school workspace.
                 </p>
                 <p className="mt-1 text-gradely-muted">
                   All dates use the official academic timezone ({calendar.timezone}),
@@ -402,9 +424,10 @@ export default function CalendarPage() {
               className="mt-0.5 size-4 shrink-0 text-gradely-navy"
             />
             <p>
-              Assessment deadlines and examination periods are calculated from
-              each term’s closing date. Report release remains subject to the
-              school’s Wise Grade billing status.
+              Assessment deadlines and examination periods are configured
+              independently by the Platform Super Admin and shown exactly as
+              approved. Report release remains subject to the school’s Wise
+              Grade billing status and the separate report approval workflow.
             </p>
           </div>
         </>

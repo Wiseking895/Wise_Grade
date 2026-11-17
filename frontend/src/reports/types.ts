@@ -26,9 +26,9 @@ export interface ReportSettings {
   schoolId: string
   academicYearId: string
   academicTermId: string
-  emblemObjectKey: string | null
-  crestObjectKey: string | null
-  signatureObjectKey: string | null
+  emblemAssetId: string | null
+  crestAssetId: string | null
+  signatureAssetId: string | null
   headteacherLabel: string
   rankingEnabled: boolean
   tiePolicy: ReportTiePolicy
@@ -43,9 +43,9 @@ export interface ReportSettings {
 export interface ReportSettingsInput {
   academicYearId: string
   academicTermId: string
-  emblemObjectKey?: string | null
-  crestObjectKey?: string | null
-  signatureObjectKey?: string | null
+  emblemAssetId?: string | null
+  crestAssetId?: string | null
+  signatureAssetId?: string | null
   headteacherLabel?: string
   rankingEnabled?: boolean
   tiePolicy?: ReportTiePolicy
@@ -59,7 +59,6 @@ export interface ReportAsset {
   id: string
   schoolId: string
   kind: ReportAssetKind
-  storageKey: string
   mimeType: string
   byteSize: number
   checksum: string

@@ -138,6 +138,7 @@ describe('automatic academic calendar HTTP surface', () => {
         sequence: 2,
         startsOn: '2027-01-06',
         endsOn: '2027-04-03',
+        datesConfirmed: false,
       },
       {
         name: 'Term 3',
@@ -161,9 +162,19 @@ describe('automatic academic calendar HTTP surface', () => {
         assessmentDeadline: '2026-11-28',
         examinationStartsOn: '2026-12-05',
         examinationEndsOn: '2026-12-19',
+        datesConfirmed: true,
         reportStatus: 'NOT_PREPARED',
       },
     })
+
+    // The view must derive confirmation from the stored timestamp, not from a
+    // hardcoded value: the second term was seeded without confirmation.
+    expect(adminRead.body.data.calendar.years[0].terms[0].datesConfirmed).toBe(
+      true,
+    )
+    expect(adminRead.body.data.calendar.years[0].terms[1].datesConfirmed).toBe(
+      false,
+    )
 
     const teacherUser = await ctx.auth.createUser({
       email: 'teacher@accra-basic.test',

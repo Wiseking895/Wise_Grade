@@ -191,15 +191,16 @@ export function createPlatformHealthService(
             checkedAt,
           ),
         )
-      } catch (error) {
+      } catch {
+        // The adapter normally converts failures into a sanitized
+        // StorageHealth message. If it throws instead, never surface the raw
+        // error (it can contain bucket or object details) to the client.
         checks.push(
           check(
             'storage',
             'Private object storage',
             'error',
-            `Storage probe failed: ${
-              error instanceof Error ? error.message : 'unknown error'
-            }`,
+            'The storage probe failed unexpectedly. Check the server logs for a sanitized error descriptor.',
             checkedAt,
           ),
         )

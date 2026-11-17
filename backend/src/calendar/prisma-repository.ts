@@ -2,7 +2,13 @@ import { getPrismaClient } from '../lib/prisma.js'
 import type { Prisma } from '../generated/prisma/client.js'
 import { isUniqueConstraintError } from '../auth/prisma-repository.js'
 import { HttpError } from '../errors/http-error.js'
-import { initialTermLifecycles, todayInCalendar, validateCalendarConfiguration } from './logic.js'
+import {
+  assessmentDeadlineFor,
+  examinationPeriodFor,
+  initialTermLifecycles,
+  todayInCalendar,
+  validateCalendarConfiguration,
+} from './logic.js'
 import type {
   AcademicYearCreateInput,
   AcademicYearPlan,
@@ -236,6 +242,141 @@ async function findTermOrThrow(
   return term
 }
 
+const PLANNED_LIFECYCLE: TermLifecycle = {
+  status: 'PLANNED',
+  isCurrent: false,
+  openedAt: null,
+  closedAt: null,
+}
+
+/** Reconstructs the full configuration of a stored term, resolving legacy falls-backs. */
+function termConfigFromRecord(term: CalendarTermRecord): CalendarTermConfig {
+  return {
+    name: term.name,
+    sequence: term.sequence,
+    startsOn: term.startsOn,
+    endsOn: term.endsOn,
+    assessmentDeadline:
+      term.assessmentDeadline ?? assessmentDeadlineFor(term.endsOn),
+    examinationStartsOn:
+      term.examinationStartsOn ??
+      examinationPeriodFor(term.endsOn).startsOn,
+    examinationEndsOn: term.examinationEndsOn ?? term.endsOn,
+    datesConfirmed: term.datesConfirmedAt !== null,
+  }
+}
+
+function newTermData(
+  schoolId: string,
+  term: CalendarTermConfig,
+  lifecycle: TermLifecycle,
+  at: Date,
+) {
+  return {
+    schoolId,
+    name: term.name,
+    sequence: term.sequence,
+    startsOn: parseDate(term.startsOn),
+    endsOn: parseDate(term.endsOn),
+    isCurrent: lifecycle.isCurrent,
+    status: lifecycle.status,
+    openedAt: lifecycle.openedAt,
+    closedAt: lifecycle.closedAt,
+    reportsPreparedAt: null,
+    assessmentDeadline: parseDate(term.assessmentDeadline),
+    examinationStartsOn: parseDate(term.examinationStartsOn),
+    examinationEndsOn: parseDate(term.examinationEndsOn),
+    datesConfirmedAt: term.datesConfirmed ? at : null,
+  }
+}
+
+/**
+ * Date correction of an existing term. Lifecycle, report preparation and every
+ * historical relation are deliberately left untouched: only the configuration
+ * the platform owns is replaced.
+ */
+function termUpdateData(term: CalendarTermConfig, at: Date) {
+  return {
+    name: term.name,
+    startsOn: parseDate(term.startsOn),
+    endsOn: parseDate(term.endsOn),
+    assessmentDeadline: parseDate(term.assessmentDeadline),
+    examinationStartsOn: parseDate(term.examinationStartsOn),
+    examinationEndsOn: parseDate(term.examinationEndsOn),
+    datesConfirmedAt: term.datesConfirmed ? at : null,
+  }
+}
+
+function describeYearChanges(
+  before: CalendarYearRecord,
+  after: CalendarYearRecord,
+): string[] {
+  const changes: string[] = []
+  const beforeTerms = new Map(before.terms.map((term) => [term.sequence, term]))
+
+  if (before.name !== after.name) {
+    changes.push(`Academic year renamed from ${before.name} to ${after.name}`)
+  }
+  if (before.startsOn !== after.startsOn) {
+    changes.push(
+      `Academic year opening changed from ${before.startsOn} to ${after.startsOn}`,
+    )
+  }
+  if (before.endsOn !== after.endsOn) {
+    changes.push(
+      `Academic year closing changed from ${before.endsOn} to ${after.endsOn}`,
+    )
+  }
+
+  for (const term of after.terms) {
+    const previous = beforeTerms.get(term.sequence)
+    const label = previous?.name ?? term.name
+
+    if (!previous) {
+      changes.push(`${term.name} created`)
+      continue
+    }
+
+    if (previous.name !== term.name) {
+      changes.push(`${label} renamed to ${term.name}`)
+    }
+    if (previous.startsOn !== term.startsOn) {
+      changes.push(
+        `${term.name} opening changed from ${previous.startsOn} to ${term.startsOn}`,
+      )
+    }
+    if (previous.endsOn !== term.endsOn) {
+      changes.push(
+        `${term.name} closing changed from ${previous.endsOn} to ${term.endsOn}`,
+      )
+    }
+    if (previous.assessmentDeadline !== term.assessmentDeadline) {
+      changes.push(
+        `${term.name} assessment deadline changed from ${previous.assessmentDeadline ?? 'derived'} to ${term.assessmentDeadline ?? 'derived'}`,
+      )
+    }
+    if (previous.examinationStartsOn !== term.examinationStartsOn) {
+      changes.push(
+        `${term.name} examination start changed from ${previous.examinationStartsOn ?? 'derived'} to ${term.examinationStartsOn ?? 'derived'}`,
+      )
+    }
+    if (previous.examinationEndsOn !== term.examinationEndsOn) {
+      changes.push(
+        `${term.name} examination end changed from ${previous.examinationEndsOn ?? 'derived'} to ${term.examinationEndsOn ?? 'derived'}`,
+      )
+    }
+    if (
+      (previous.datesConfirmedAt !== null) !== (term.datesConfirmedAt !== null)
+    ) {
+      changes.push(
+        `${term.name} marked ${term.datesConfirmedAt ? 'confirmed' : 'awaiting confirmation'}`,
+      )
+    }
+  }
+
+  return changes
+}
+
 export function createPrismaCalendarRepository(): CalendarRepository {
   return {
     async listActiveSchoolIds() {
@@ -341,6 +482,14 @@ export function createPrismaCalendarRepository(): CalendarRepository {
                     reportsPreparedAt: lifecycle.reportsPreparedAt
                       ? parseDate(lifecycle.reportsPreparedAt)
                       : null,
+                    assessmentDeadline: parseDate(
+                      assessmentDeadlineFor(term.endsOn),
+                    ),
+                    examinationStartsOn: parseDate(
+                      examinationPeriodFor(term.endsOn).startsOn,
+                    ),
+                    examinationEndsOn: parseDate(term.endsOn),
+                    datesConfirmedAt: new Date(),
                   }
                 }),
               },
@@ -370,6 +519,763 @@ export function createPrismaCalendarRepository(): CalendarRepository {
 
         throw error
       }
+    },
+
+    async createAcademicYear(
+      schoolId: string,
+      input: AcademicYearCreateInput,
+      audit,
+    ): Promise<CalendarYearRecord> {
+      const prisma = getPrismaClient()
+      const at = new Date()
+
+      return prisma.$transaction(async (tx) => {
+        assertValidCalendar(input)
+
+        const duplicate = await tx.academicYear.findFirst({
+          where: { schoolId, name: input.name },
+          select: { id: true },
+        })
+
+        if (duplicate) {
+          throw new HttpError(
+            409,
+            `Academic year ${input.name} already exists for this school`,
+          )
+        }
+
+        const today = todayInCalendar(at)
+
+        if (input.activate) {
+          await tx.academicYear.updateMany({
+            where: { schoolId, isCurrent: true },
+            data: { isCurrent: false },
+          })
+          await tx.academicTerm.updateMany({
+            where: { schoolId, isCurrent: true },
+            data: { isCurrent: false },
+          })
+        }
+
+        const year = await tx.academicYear.create({
+          data: {
+            schoolId,
+            name: input.name,
+            startsOn: parseDate(input.startsOn),
+            endsOn: parseDate(input.endsOn),
+            isCurrent: input.activate,
+            terms: {
+              create: input.terms.map((term) =>
+                newTermData(
+                  schoolId,
+                  term,
+                  input.activate
+                    ? lifecycleForTerm(
+                        term,
+                        today,
+                        term.datesConfirmed,
+                        at,
+                      )
+                    : PLANNED_LIFECYCLE,
+                  at,
+                ),
+              ),
+            },
+          },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        await recordCalendarAudit(tx, {
+          schoolId,
+          action: 'CALENDAR_YEAR_CREATED',
+          entityType: 'AcademicYear',
+          entityId: year.id,
+          metadata: {
+            source: 'PLATFORM',
+            after: yearSignature(mapYear(year)),
+          },
+          audit,
+        })
+
+        return mapYear(year)
+      })
+    },
+
+    async updateAcademicYear(
+      schoolId: string,
+      yearId: string,
+      input: AcademicYearUpdateInput,
+      audit,
+    ): Promise<CalendarYearRecord> {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const year = await tx.academicYear.findFirst({
+          where: { id: yearId, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        if (!year) {
+          throw new HttpError(404, 'Academic year not found')
+        }
+
+        if (year.isArchived) {
+          throw new HttpError(
+            409,
+            'Archived academic years cannot be edited; create a new year instead',
+          )
+        }
+
+        const duplicate = await tx.academicYear.findFirst({
+          where: { schoolId, name: input.name, NOT: { id: yearId } },
+          select: { id: true },
+        })
+
+        if (duplicate) {
+          throw new HttpError(
+            409,
+            `Academic year ${input.name} already exists for this school`,
+          )
+        }
+
+        const before = mapYear(year)
+
+        assertValidCalendar({
+          startsOn: input.startsOn,
+          endsOn: input.endsOn,
+          terms: before.terms.map(termConfigFromRecord),
+        })
+
+        const updated = await tx.academicYear.update({
+          where: { id: yearId },
+          data: {
+            name: input.name,
+            startsOn: parseDate(input.startsOn),
+            endsOn: parseDate(input.endsOn),
+          },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        await recordCalendarAudit(tx, {
+          schoolId,
+          action: 'CALENDAR_YEAR_UPDATED',
+          entityType: 'AcademicYear',
+          entityId: yearId,
+          metadata: {
+            source: 'PLATFORM',
+            before: yearSignature(before),
+            after: yearSignature(mapYear(updated)),
+            changes: describeYearChanges(before, mapYear(updated)),
+          },
+          audit,
+        })
+
+        return mapYear(updated)
+      })
+    },
+
+    async upsertTerm(
+      schoolId: string,
+      yearId: string,
+      sequence: number,
+      input: CalendarTermUpdateInput,
+      audit,
+    ): Promise<CalendarTermRecord> {
+      const prisma = getPrismaClient()
+      const at = new Date()
+
+      return prisma.$transaction(async (tx) => {
+        const year = await tx.academicYear.findFirst({
+          where: { id: yearId, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        if (!year) {
+          throw new HttpError(404, 'Academic year not found')
+        }
+
+        if (year.isArchived) {
+          throw new HttpError(
+            409,
+            'Terms of an archived academic year cannot be edited',
+          )
+        }
+
+        const existing = year.terms.find((term) => term.sequence === sequence)
+        const before = existing ? mapTerm(existing) : null
+        const datesChanged =
+          before !== null &&
+          (before.startsOn !== input.startsOn ||
+            before.endsOn !== input.endsOn)
+
+        if (
+          before &&
+          before.status !== 'PLANNED' &&
+          datesChanged &&
+          input.acknowledgeImpacts !== true
+        ) {
+          throw new HttpError(
+            409,
+            `${before.name} is already ${before.status.toLowerCase()}. Correcting its dates can trigger an immediate scheduler transition; confirm that you understand the impact.`,
+          )
+        }
+
+        if (
+          before &&
+          before.datesConfirmedAt !== null &&
+          !input.datesConfirmed &&
+          before.status !== 'PLANNED'
+        ) {
+          throw new HttpError(
+            409,
+            'An opened or closed term cannot be returned to awaiting confirmation',
+          )
+        }
+
+        const config: CalendarTermConfig = {
+          name: input.name,
+          sequence,
+          startsOn: input.startsOn,
+          endsOn: input.endsOn,
+          assessmentDeadline: input.assessmentDeadline,
+          examinationStartsOn: input.examinationStartsOn,
+          examinationEndsOn: input.examinationEndsOn,
+          datesConfirmed: input.datesConfirmed,
+        }
+
+        const merged = year.terms
+          .filter((term) => term.sequence !== sequence)
+          .map((term) => termConfigFromRecord(mapTerm(term)))
+
+        merged.push(config)
+
+        assertValidCalendar({
+          startsOn: dateOnly(year.startsOn),
+          endsOn: dateOnly(year.endsOn),
+          terms: merged,
+        })
+
+        const saved = existing
+          ? await tx.academicTerm.update({
+              where: { id: existing.id },
+              data: termUpdateData(config, at),
+            })
+          : await tx.academicTerm.create({
+              data: {
+                academicYearId: yearId,
+                ...newTermData(schoolId, config, PLANNED_LIFECYCLE, at),
+              },
+            })
+
+        const after = mapTerm(saved)
+
+        await recordCalendarAudit(tx, {
+          schoolId,
+          action: before ? 'CALENDAR_TERM_UPDATED' : 'CALENDAR_TERM_CREATED',
+          entityType: 'AcademicTerm',
+          entityId: saved.id,
+          metadata: {
+            source: 'PLATFORM',
+            yearId,
+            sequence,
+            before: before ? yearSignature({ ...mapYear(year), terms: [before] }).terms : null,
+            after: yearSignature({ ...mapYear(year), terms: [after] }).terms,
+          },
+          audit,
+        })
+
+        return after
+      })
+    },
+
+    async activateAcademicYear(
+      schoolId: string,
+      yearId: string,
+      at: Date,
+      audit,
+    ): Promise<CalendarYearRecord> {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const year = await tx.academicYear.findFirst({
+          where: { id: yearId, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        if (!year) {
+          throw new HttpError(404, 'Academic year not found')
+        }
+
+        if (year.isArchived) {
+          throw new HttpError(409, 'An archived academic year cannot be activated')
+        }
+
+        if (year.isCurrent) {
+          return mapYear(year)
+        }
+
+        // Single-current-year invariant: cleared in the same transaction that
+        // sets the new current year, so no observer can see two current years.
+        await tx.academicYear.updateMany({
+          where: { schoolId, isCurrent: true },
+          data: { isCurrent: false },
+        })
+        await tx.academicTerm.updateMany({
+          where: { schoolId, isCurrent: true },
+          data: { isCurrent: false },
+        })
+
+        const updated = await tx.academicYear.update({
+          where: { id: yearId },
+          data: { isCurrent: true },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        await recordCalendarAudit(tx, {
+          schoolId,
+          action: 'CALENDAR_YEAR_ACTIVATED',
+          entityType: 'AcademicYear',
+          entityId: yearId,
+          metadata: {
+            source: 'PLATFORM',
+            before: { isCurrent: year.isCurrent },
+            after: { isCurrent: true },
+            at: at.toISOString(),
+          },
+          audit,
+        })
+
+        return mapYear(updated)
+      })
+    },
+
+    async deactivateAcademicYear(
+      schoolId: string,
+      yearId: string,
+      audit,
+    ): Promise<CalendarYearRecord> {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const year = await tx.academicYear.findFirst({
+          where: { id: yearId, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        if (!year) {
+          throw new HttpError(404, 'Academic year not found')
+        }
+
+        if (year.isArchived) {
+          throw new HttpError(
+            409,
+            'An archived academic year is already deactivated',
+          )
+        }
+
+        if (!year.isCurrent) {
+          return mapYear(year)
+        }
+
+        await tx.academicYear.update({
+          where: { id: yearId },
+          data: { isCurrent: false },
+        })
+        await tx.academicTerm.updateMany({
+          where: { academicYearId: yearId, isCurrent: true },
+          data: { isCurrent: false },
+        })
+
+        const updated = await tx.academicYear.findFirstOrThrow({
+          where: { id: yearId, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        await recordCalendarAudit(tx, {
+          schoolId,
+          action: 'CALENDAR_YEAR_DEACTIVATED',
+          entityType: 'AcademicYear',
+          entityId: yearId,
+          metadata: {
+            source: 'PLATFORM',
+            before: { isCurrent: true },
+            after: { isCurrent: false },
+          },
+          audit,
+        })
+
+        return mapYear(updated)
+      })
+    },
+
+    async archiveAcademicYear(
+      schoolId: string,
+      yearId: string,
+      at: Date,
+      audit,
+    ): Promise<CalendarYearRecord> {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const year = await tx.academicYear.findFirst({
+          where: { id: yearId, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        if (!year) {
+          throw new HttpError(404, 'Academic year not found')
+        }
+
+        if (year.isArchived) {
+          return mapYear(year)
+        }
+
+        if (year.isCurrent) {
+          throw new HttpError(
+            409,
+            'Deactivate the current academic year before archiving it',
+          )
+        }
+
+        await tx.academicYear.update({
+          where: { id: yearId },
+          data: {
+            isArchived: true,
+            archivedAt: year.archivedAt ?? at,
+            isCurrent: false,
+          },
+        })
+        await tx.academicTerm.updateMany({
+          where: { academicYearId: yearId, isCurrent: true },
+          data: { isCurrent: false },
+        })
+
+        const updated = await tx.academicYear.findFirstOrThrow({
+          where: { id: yearId, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        await recordCalendarAudit(tx, {
+          schoolId,
+          action: 'CALENDAR_YEAR_ARCHIVED',
+          entityType: 'AcademicYear',
+          entityId: yearId,
+          metadata: {
+            source: 'PLATFORM',
+            before: { isArchived: year.isArchived, isCurrent: year.isCurrent },
+            after: { isArchived: true, isCurrent: false },
+            archivedAt: at.toISOString(),
+            preservedTerms: updated.terms.length,
+          },
+          audit,
+        })
+
+        return mapYear(updated)
+      })
+    },
+
+    async resetAcademicYear(
+      schoolId: string,
+      yearId: string,
+      input: CalendarResetInput,
+      at: Date,
+      audit,
+    ): Promise<{ year: CalendarYearRecord; changes: string[] }> {
+      const prisma = getPrismaClient()
+
+      if (!input.acknowledgeImpacts) {
+        throw new HttpError(
+          400,
+          'Resetting calendar configuration requires explicit acknowledgement',
+        )
+      }
+
+      return prisma.$transaction(async (tx) => {
+        const year = await tx.academicYear.findFirst({
+          where: { id: yearId, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        if (!year) {
+          throw new HttpError(404, 'Academic year not found')
+        }
+
+        if (year.isArchived) {
+          throw new HttpError(
+            409,
+            'Archived academic years are read-only and cannot be reset',
+          )
+        }
+
+        const duplicate = await tx.academicYear.findFirst({
+          where: { schoolId, name: input.name, NOT: { id: yearId } },
+          select: { id: true },
+        })
+
+        if (duplicate) {
+          throw new HttpError(
+            409,
+            `Academic year ${input.name} already exists for this school`,
+          )
+        }
+
+        const before = mapYear(year)
+        const remaining = new Map(
+          before.terms.map((term) => [term.sequence, term]),
+        )
+
+        for (const config of input.terms) {
+          remaining.delete(config.sequence)
+        }
+
+        // Terms that are not part of the reset payload stay exactly as they
+        // are. They still participate in validation, so the final calendar
+        // cannot contain an overlap or an out-of-range date.
+        const merged = [
+          ...input.terms,
+          ...Array.from(remaining.values()).map(termConfigFromRecord),
+        ]
+
+        assertValidCalendar({
+          startsOn: input.startsOn,
+          endsOn: input.endsOn,
+          terms: merged,
+        })
+
+        await tx.academicYear.update({
+          where: { id: yearId },
+          data: {
+            name: input.name,
+            startsOn: parseDate(input.startsOn),
+            endsOn: parseDate(input.endsOn),
+          },
+        })
+
+        for (const config of input.terms) {
+          const existing = before.terms.find(
+            (term) => term.sequence === config.sequence,
+          )
+
+          if (existing) {
+            await tx.academicTerm.update({
+              where: { id: existing.id },
+              data: termUpdateData(config, at),
+            })
+          } else {
+            await tx.academicTerm.create({
+              data: {
+                academicYearId: yearId,
+                ...newTermData(schoolId, config, PLANNED_LIFECYCLE, at),
+              },
+            })
+          }
+        }
+
+        const reloaded = await tx.academicYear.findFirstOrThrow({
+          where: { id: yearId, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        const after = mapYear(reloaded)
+        const changes = describeYearChanges(before, after)
+
+        await recordCalendarAudit(tx, {
+          schoolId,
+          action: 'CALENDAR_YEAR_RESET',
+          entityType: 'AcademicYear',
+          entityId: yearId,
+          metadata: {
+            source: 'PLATFORM',
+            before: yearSignature(before),
+            after: yearSignature(after),
+            changes,
+            preservedTerms: Array.from(remaining.values()).map((term) => ({
+              sequence: term.sequence,
+              name: term.name,
+            })),
+            at: at.toISOString(),
+          },
+          audit,
+        })
+
+        return { year: after, changes }
+      })
+    },
+
+    async applyAcademicYear(
+      schoolId: string,
+      config: AcademicYearCreateInput,
+      at: Date,
+      audit,
+    ): Promise<ApplySchoolResult> {
+      const prisma = getPrismaClient()
+      const today = todayInCalendar(at)
+
+      return prisma.$transaction(async (tx) => {
+        assertValidCalendar(config)
+
+        const existing = await tx.academicYear.findFirst({
+          where: { schoolId, name: config.name },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+
+        if (!existing) {
+          const containsToday =
+            config.startsOn <= today && today <= config.endsOn
+
+          if (containsToday) {
+            await tx.academicYear.updateMany({
+              where: { schoolId, isCurrent: true },
+              data: { isCurrent: false },
+            })
+            await tx.academicTerm.updateMany({
+              where: { schoolId, isCurrent: true },
+              data: { isCurrent: false },
+            })
+          }
+
+          const created = await tx.academicYear.create({
+            data: {
+              schoolId,
+              name: config.name,
+              startsOn: parseDate(config.startsOn),
+              endsOn: parseDate(config.endsOn),
+              isCurrent: containsToday,
+              terms: {
+                create: config.terms.map((term) =>
+                  newTermData(
+                    schoolId,
+                    term,
+                    containsToday
+                      ? lifecycleForTerm(
+                          term,
+                          today,
+                          term.datesConfirmed,
+                          at,
+                        )
+                      : PLANNED_LIFECYCLE,
+                    at,
+                  ),
+                ),
+              },
+            },
+            include: { terms: { orderBy: { sequence: 'asc' } } },
+          })
+
+          await recordCalendarAudit(tx, {
+            schoolId,
+            action: 'CALENDAR_APPLIED_TO_SCHOOL',
+            entityType: 'AcademicYear',
+            entityId: created.id,
+            metadata: {
+              source: 'PLATFORM',
+              action: 'CREATED',
+              after: yearSignature(mapYear(created)),
+            },
+            audit,
+          })
+
+          return {
+            action: 'CREATED' as const,
+            yearId: created.id,
+            termCount: created.terms.length,
+            warnings: [],
+          }
+        }
+
+        const before = mapYear(existing)
+        const warnings: string[] = []
+
+        if (before.isArchived) {
+          warnings.push(
+            'The academic year is archived; its configuration was corrected in place and remains read-only history.',
+          )
+        }
+
+        const configBySequence = new Map(
+          config.terms.map((term) => [term.sequence, term]),
+        )
+        const merged = [
+          ...config.terms,
+          ...before.terms
+            .filter((term) => !configBySequence.has(term.sequence))
+            .map(termConfigFromRecord),
+        ]
+
+        assertValidCalendar({
+          startsOn: config.startsOn,
+          endsOn: config.endsOn,
+          terms: merged,
+        })
+
+        await tx.academicYear.update({
+          where: { id: existing.id },
+          data: {
+            startsOn: parseDate(config.startsOn),
+            endsOn: parseDate(config.endsOn),
+          },
+        })
+
+        for (const termConfig of config.terms) {
+          const current = before.terms.find(
+            (term) => term.sequence === termConfig.sequence,
+          )
+
+          if (!current) {
+            await tx.academicTerm.create({
+              data: {
+                academicYearId: existing.id,
+                ...newTermData(schoolId, termConfig, PLANNED_LIFECYCLE, at),
+              },
+            })
+            continue
+          }
+
+          if (
+            current.status !== 'PLANNED' &&
+            (current.startsOn !== termConfig.startsOn ||
+              current.endsOn !== termConfig.endsOn)
+          ) {
+            warnings.push(
+              `${current.name} is already ${current.status.toLowerCase()}; its dates were corrected without changing its lifecycle or reports.`,
+            )
+          }
+
+          await tx.academicTerm.update({
+            where: { id: current.id },
+            data: termUpdateData(termConfig, at),
+          })
+        }
+
+        const reloaded = await tx.academicYear.findFirstOrThrow({
+          where: { id: existing.id, schoolId },
+          include: { terms: { orderBy: { sequence: 'asc' } } },
+        })
+        const after = mapYear(reloaded)
+
+        await recordCalendarAudit(tx, {
+          schoolId,
+          action: 'CALENDAR_APPLIED_TO_SCHOOL',
+          entityType: 'AcademicYear',
+          entityId: existing.id,
+          metadata: {
+            source: 'PLATFORM',
+            action: 'UPDATED',
+            before: yearSignature(before),
+            after: yearSignature(after),
+            changes: describeYearChanges(before, after),
+            warnings,
+          },
+          audit,
+        })
+
+        return {
+          action: 'UPDATED' as const,
+          yearId: existing.id,
+          termCount: config.terms.length,
+          warnings,
+        }
+      })
     },
 
     async openTerm(schoolId, termId, at) {
@@ -531,6 +1437,14 @@ export function createPrismaCalendarRepository(): CalendarRepository {
                     reportsPreparedAt: lifecycle.reportsPreparedAt
                       ? parseDate(lifecycle.reportsPreparedAt)
                       : null,
+                    assessmentDeadline: parseDate(
+                      assessmentDeadlineFor(term.endsOn),
+                    ),
+                    examinationStartsOn: parseDate(
+                      examinationPeriodFor(term.endsOn).startsOn,
+                    ),
+                    examinationEndsOn: parseDate(term.endsOn),
+                    datesConfirmedAt: at,
                   }
                 }),
               },

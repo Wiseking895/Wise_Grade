@@ -30,6 +30,14 @@ function term(
     closedAt: null,
     reportsPreparedAt: null,
     ...overrides,
+    assessmentDeadline:
+      overrides.assessmentDeadline ?? assessmentDeadlineFor(overrides.endsOn),
+    examinationStartsOn:
+      overrides.examinationStartsOn ??
+      examinationPeriodFor(overrides.endsOn).startsOn,
+    examinationEndsOn: overrides.examinationEndsOn ?? overrides.endsOn,
+    datesConfirmedAt:
+      overrides.datesConfirmedAt ?? new Date('2026-09-01T00:00:00.000Z'),
   }
 }
 

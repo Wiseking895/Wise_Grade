@@ -9,6 +9,12 @@ const fallbackDatabaseUrl =
 
 const databaseUrl = process.env.DATABASE_URL ?? fallbackDatabaseUrl
 
+// Neon's pooled endpoint is ideal for the application runtime but cannot run
+// every migration reliably. When DIRECT_DATABASE_URL is provided, Prisma
+// commands (including `migrate deploy`) use the direct endpoint instead.
+const directDatabaseUrl = process.env.DIRECT_DATABASE_URL?.trim()
+const resolvedDatabaseUrl = directDatabaseUrl || databaseUrl
+
 // Refuse to let database-mutating Prisma commands silently fall back to the
 // placeholder. `migrate diff` is intentionally excluded because it is
 // read-only and must work without credentials.
@@ -19,9 +25,13 @@ const requiresRealDatabase =
   /\bdb\s+(push|execute|seed)\b/.test(argv) ||
   /^prisma:(migrate:|db:)/.test(lifecycle)
 
-if (requiresRealDatabase && !process.env.DATABASE_URL) {
+if (
+  requiresRealDatabase &&
+  !process.env.DATABASE_URL &&
+  !directDatabaseUrl
+) {
   throw new Error(
-    'DATABASE_URL is required for Prisma migration/database commands. Copy backend/.env.example to backend/.env and configure a real PostgreSQL connection string. The placeholder URL is never used for migrations.',
+    'DATABASE_URL (or DIRECT_DATABASE_URL) is required for Prisma migration/database commands. Copy backend/.env.example to backend/.env and configure a real PostgreSQL connection string. The placeholder URL is never used for migrations.',
   )
 }
 
@@ -31,6 +41,6 @@ export default defineConfig({
     path: 'prisma/migrations',
   },
   datasource: {
-    url: databaseUrl,
+    url: resolvedDatabaseUrl,
   },
 })

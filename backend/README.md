@@ -866,6 +866,19 @@ For production, also plan for:
 - Email delivery for password reset and invitations.
 - Backups, monitoring, and a migration deployment runbook.
 
+## Production deployment (Vercel)
+
+The backend deploys as a separate Vercel project named `gradely-backend` with
+Root Directory `backend` and Framework Preset Other. `api/index.js` exports the
+compiled Express app through `dist/serverless.js`; it never calls `listen` and
+never starts an interval timer. Academic calendar processing runs through the
+protected `GET /api/internal/calendar` Cron endpoint, guarded by `CRON_SECRET`
+and a PostgreSQL lease.
+
+See [`docs/VERCEL_DEPLOYMENT.md`](docs/VERCEL_DEPLOYMENT.md) for project
+settings, the complete environment-variable checklist, migration command,
+deployment sequence, health checks and the scheduler strategy.
+
 ## Scope and limitations
 
 Implemented through Phase 6A:

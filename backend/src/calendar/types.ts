@@ -228,6 +228,11 @@ export interface CalendarTermUpdateInput {
   examinationStartsOn: string
   examinationEndsOn: string
   datesConfirmed: boolean
+  /**
+   * Required when correcting dates on a term that is already open or closed:
+   * the change can make the scheduler transition immediately.
+   */
+  acknowledgeImpacts?: boolean
 }
 
 export interface CalendarResetInput extends AcademicYearUpdateInput {
@@ -247,6 +252,56 @@ export interface ApplySchoolResult {
   yearId: string
   termCount: number
   warnings: string[]
+}
+
+export type ApplyPreviewAction = 'CREATE' | 'UPDATE' | 'UNCHANGED'
+
+export interface CalendarApplySchoolPreview {
+  schoolId: string
+  schoolName: string
+  action: ApplyPreviewAction
+  termCount: number
+  changes: string[]
+  warnings: string[]
+}
+
+export interface CalendarApplyPreview {
+  sourceSchoolId: string
+  sourceSchoolName: string
+  yearId: string
+  yearName: string
+  totalSchools: number
+  affectedSchools: number
+  schools: CalendarApplySchoolPreview[]
+}
+
+export type ApplySchoolStatus = 'SUCCEEDED' | 'FAILED'
+
+export interface CalendarApplySchoolResult {
+  schoolId: string
+  schoolName: string
+  status: ApplySchoolStatus
+  action?: ApplySchoolAction
+  termCount?: number
+  warnings: string[]
+  error?: string
+}
+
+export interface CalendarApplyResult {
+  sourceSchoolId: string
+  sourceSchoolName: string
+  yearId: string
+  yearName: string
+  totalSchools: number
+  succeeded: number
+  failed: number
+  results: CalendarApplySchoolResult[]
+}
+
+export interface CalendarAuditActor {
+  actorUserId: string
+  ipAddress?: string | null
+  userAgent?: string | null
 }
 
 export interface CalendarRepository {

@@ -262,9 +262,7 @@ export class R2StorageAdapter implements StorageAdapter {
       return {
         mode: 'r2',
         ok: false,
-        message: `Private R2 bucket check failed: ${
-          error instanceof Error ? error.message : 'unknown error'
-        }`,
+        message: `Private R2 bucket check failed: ${storageFailureMessage(error)}`,
       }
     }
   }
@@ -299,55 +297,195 @@ class UnconfiguredStorageAdapter implements StorageAdapter {
   }
 }
 
+/**
+ * Maps an R2/HeadBucket failure to a fixed, administrator-safe message.
+ *
+ * The raw SDK error is deliberately never returned: it can contain the bucket
+ * name, the endpoint host, the object key and request identifiers. Only the
+ * error name and HTTP status code are used to choose a safe explanation.
+ */
+export function storageFailureMessage(error: unknown): string {
+  const name =
+    error && typeof error === 'object' && 'name' in error
+      ? String((error as { name?: unknown }).name ?? '')
+      : ''
+
+  let httpStatusCode: number | undefined
+
+  if (error && typeof error === 'object' && '$metadata' in error) {
+    const metadata = (error as { $metadata?: { httpStatusCode?: unknown } })
+      .$metadata
+
+    if (metadata && typeof metadata.httpStatusCode === 'number') {
+      httpStatusCode = metadata.httpStatusCode
+    }
+  }
+
+  if (name === 'NoSuchBucket' || httpStatusCode === 404) {
+    return 'The configured private R2 bucket was not found. Check R2_BUCKET_NAME.'
+  }
+
+  if (name === 'InvalidAccessKeyId') {
+    return 'The configured R2 access key ID was rejected. Check R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY.'
+  }
+
+  if (name === 'SignatureDoesNotMatch') {
+    return 'The configured R2 secret access key was rejected. Check R2_SECRET_ACCESS_KEY.'
+  }
+
+  if (
+    name === 'AccessDenied' ||
+    name === 'Forbidden' ||
+    httpStatusCode === 403
+  ) {
+    return 'The configured R2 credentials are not authorized to access the private bucket.'
+  }
+
+  if (
+    name === 'TimeoutError' ||
+    name === 'RequestTimeout' ||
+    name === 'AbortError' ||
+    name === 'ETIMEDOUT'
+  ) {
+    return 'The private R2 bucket check timed out. Check network access and try again.'
+  }
+
+  return 'The private R2 bucket could not be reached. Check the R2 configuration and the server logs.'
+}
+
+export type StorageDriver = 'auto' | 'r2' | 'local' | 'memory' | 'unconfigured'
+
+export interface StorageCredentials {
+  accountId: string
+  accessKeyId: string
+  secretAccessKey: string
+  bucketName: string
+}
+
 export interface StorageFactoryOptions {
   nodeEnv?: string
-  accountId?: string
-  accessKeyId?: string
-  secretAccessKey?: string
-  bucketName?: string
+  /**
+   * Explicit adapter selection. `auto` keeps the production behaviour: R2 when
+   * complete credentials are available, otherwise local storage outside
+   * production and a loudly unconfigured adapter in production.
+   */
+  driver?: StorageDriver
+  /**
+   * Explicit credentials. Supplying this object — even an empty one — disables
+   * the environment fallback completely, so callers can force an unconfigured
+   * adapter without inheriting process credentials.
+   */
+  credentials?: Partial<StorageCredentials>
   localRoot?: string
 }
 
 /**
- * Uses R2 whenever all four private credentials are present. Otherwise a
- * local private directory is used outside production, and production fails
- * loudly rather than silently writing to an ephemeral disk.
+ * True when this process is an automated test run.
+ *
+ * Vitest sets both `NODE_ENV=test` and `VITEST=true`; checking both keeps the
+ * guard effective even when a caller overrides `nodeEnv` explicitly.
+ */
+function isTestRuntime(nodeEnv: string): boolean {
+  return (
+    nodeEnv === 'test' ||
+    Boolean(process.env.VITEST) ||
+    process.env.VITEST_WORKER_ID !== undefined
+  )
+}
+
+function hasCompleteCredentials(
+  credentials: Partial<StorageCredentials>,
+): credentials is StorageCredentials {
+  return Boolean(
+    credentials.accountId &&
+      credentials.accessKeyId &&
+      credentials.secretAccessKey &&
+      credentials.bucketName,
+  )
+}
+
+/**
+ * Creates the private storage adapter.
+ *
+ * Safety rules:
+ * - In a test runtime the environment is never consulted for credentials, so a
+ *   developer's real `.env` cannot point automated tests at production R2.
+ * - `auto` never selects R2 in a test runtime; tests must inject a
+ *   `MemoryStorageAdapter` or explicitly request `driver: 'r2'` with explicit
+ *   credentials.
+ * - `driver: 'r2'` only ever uses `options.credentials`, never the environment.
  */
 export function createStorageAdapter(
   options: StorageFactoryOptions = {},
 ): StorageAdapter {
-  const accountId = options.accountId ?? env.R2_ACCOUNT_ID
-  const accessKeyId = options.accessKeyId ?? env.R2_ACCESS_KEY_ID
-  const secretAccessKey =
-    options.secretAccessKey ?? env.R2_SECRET_ACCESS_KEY
-  const bucketName = options.bucketName ?? env.R2_BUCKET_NAME
   const nodeEnv = options.nodeEnv ?? env.NODE_ENV
+  const testRuntime = isTestRuntime(nodeEnv)
+  const driver = options.driver ?? 'auto'
 
-  if (accountId && accessKeyId && secretAccessKey && bucketName) {
-    return new R2StorageAdapter({
-      accountId,
-      accessKeyId,
-      secretAccessKey,
-      bucketName,
-    })
+  if (driver === 'memory') {
+    return new MemoryStorageAdapter()
+  }
+
+  if (driver === 'unconfigured') {
+    return new UnconfiguredStorageAdapter()
+  }
+
+  if (driver === 'local') {
+    return new LocalStorageAdapter(options.localRoot)
+  }
+
+  // An explicitly supplied credentials object (even `{}`) always wins and
+  // disables the environment fallback. A test runtime ignores the environment
+  // entirely, which is what keeps the production bucket out of reach.
+  const credentials: Partial<StorageCredentials> =
+    options.credentials !== undefined
+      ? options.credentials
+      : testRuntime
+        ? {}
+        : {
+            accountId: env.R2_ACCOUNT_ID,
+            accessKeyId: env.R2_ACCESS_KEY_ID,
+            secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+            bucketName: env.R2_BUCKET_NAME,
+          }
+
+  if (driver === 'r2') {
+    return hasCompleteCredentials(credentials)
+      ? new R2StorageAdapter(credentials)
+      : new UnconfiguredStorageAdapter()
+  }
+
+  // Automatic selection. R2 is only considered outside a test runtime, so a
+  // configured `.env` can never make an integration test use the live bucket.
+  if (!testRuntime && hasCompleteCredentials(credentials)) {
+    return new R2StorageAdapter(credentials)
   }
 
   if (nodeEnv === 'production') {
     return new UnconfiguredStorageAdapter()
   }
 
+  if (testRuntime) {
+    return new MemoryStorageAdapter()
+  }
+
   return new LocalStorageAdapter(options.localRoot)
 }
 
-export function storageMode(): 'r2' | 'local' | 'unconfigured' {
-  if (
-    env.R2_ACCOUNT_ID &&
-    env.R2_ACCESS_KEY_ID &&
-    env.R2_SECRET_ACCESS_KEY &&
-    env.R2_BUCKET_NAME
-  ) {
+export function storageMode(): StorageMode {
+  const adapter = createStorageAdapter()
+
+  if (adapter instanceof R2StorageAdapter) {
     return 'r2'
   }
 
-  return env.NODE_ENV === 'production' ? 'unconfigured' : 'local'
+  if (adapter instanceof MemoryStorageAdapter) {
+    return 'memory'
+  }
+
+  if (adapter instanceof LocalStorageAdapter) {
+    return 'local'
+  }
+
+  return 'unconfigured'
 }

@@ -70,10 +70,7 @@ describe('private storage adapters', () => {
   it('fails loudly in production when R2 credentials are absent', async () => {
     const storage = createStorageAdapter({
       nodeEnv: 'production',
-      accountId: undefined,
-      accessKeyId: undefined,
-      secretAccessKey: undefined,
-      bucketName: undefined,
+      driver: 'unconfigured',
     })
 
     await expect(
@@ -81,15 +78,11 @@ describe('private storage adapters', () => {
     ).rejects.toThrow(/R2 storage is not configured/)
   })
 
-  it('uses local private storage outside production when R2 is absent', async () => {
+  it('uses explicitly requested local private storage', async () => {
     const root = await mkdtemp(join(tmpdir(), 'gradely-storage-'))
     temporaryDirectories.push(root)
     const storage = createStorageAdapter({
-      nodeEnv: 'test',
-      accountId: undefined,
-      accessKeyId: undefined,
-      secretAccessKey: undefined,
-      bucketName: undefined,
+      driver: 'local',
       localRoot: root,
     })
 
@@ -100,5 +93,89 @@ describe('private storage adapters', () => {
     )
 
     expect(metadata.key).toBe('schools/school-1/report.pdf')
+  })
+})
+
+describe('storage factory test isolation', () => {
+  it('returns in-memory storage by default in a test runtime', async () => {
+    // This is the regression guard: before the fix the factory consulted the
+    // environment and would build an R2 client whenever .env carried live
+    // credentials.
+    const storage = createStorageAdapter()
+
+    expect((await storage.healthCheck()).mode).toBe('memory')
+  })
+
+  it('ignores configured environment credentials in a test runtime', async () => {
+    const storage = createStorageAdapter({ nodeEnv: 'production' })
+
+    // If the environment fallback were still active this would be an R2
+    // adapter pointed at the production bucket.
+    expect((await storage.healthCheck()).mode).toBe('unconfigured')
+    await expect(
+      storage.putObject(
+        'schools/school-1/report.pdf',
+        Buffer.from('x'),
+        'application/pdf',
+      ),
+    ).rejects.toThrow(/R2 storage is not configured/)
+  })
+
+  it('never falls back to environment credentials for the r2 driver', async () => {
+    const storage = createStorageAdapter({ driver: 'r2' })
+
+    expect((await storage.healthCheck()).mode).toBe('unconfigured')
+  })
+
+  it('rejects an r2 driver with incomplete explicit credentials', async () => {
+    const storage = createStorageAdapter({
+      driver: 'r2',
+      credentials: { accountId: 'account' },
+    })
+
+    expect((await storage.healthCheck()).mode).toBe('unconfigured')
+  })
+
+  it('treats an explicit empty credentials object as unconfigured', async () => {
+    const storage = createStorageAdapter({
+      nodeEnv: 'production',
+      credentials: {},
+    })
+
+    expect((await storage.healthCheck()).mode).toBe('unconfigured')
+  })
+
+  it('never selects R2 for auto even with complete explicit credentials', async () => {
+    const storage = createStorageAdapter({
+      nodeEnv: 'test',
+      credentials: {
+        accountId: 'test-account',
+        accessKeyId: 'test-key',
+        secretAccessKey: 'test-secret',
+        bucketName: 'test-bucket',
+      },
+    })
+
+    // A test must opt in with driver: 'r2' deliberately; auto never builds a
+    // cloud client during a test run.
+    expect((await storage.healthCheck()).mode).toBe('memory')
+  })
+
+  it('allows memory storage to be requested explicitly', async () => {
+    const storage = createStorageAdapter({
+      nodeEnv: 'production',
+      driver: 'memory',
+    })
+
+    expect((await storage.healthCheck()).mode).toBe('memory')
+  })
+
+  it('allows an unconfigured adapter to be requested explicitly', async () => {
+    const storage = createStorageAdapter({
+      nodeEnv: 'test',
+      driver: 'unconfigured',
+    })
+
+    expect((await storage.healthCheck()).mode).toBe('unconfigured')
   })
 })

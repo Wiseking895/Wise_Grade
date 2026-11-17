@@ -2,16 +2,22 @@ import type { CookieOptions } from 'express'
 import { env } from '../config/env.js'
 import { SESSION_COOKIE_NAME, SUBJECT_SESSION_COOKIE_NAME } from '../lib/cookies.js'
 
-export function sessionCookieOptions(expiresAt: Date): CookieOptions {
-  return cookieOptions(expiresAt)
+export function sessionCookieOptions(
+  expiresAt: Date,
+  nodeEnv: string = env.NODE_ENV,
+): CookieOptions {
+  return cookieOptions(expiresAt, nodeEnv)
 }
 
-export function subjectSessionCookieOptions(expiresAt: Date): CookieOptions {
-  return cookieOptions(expiresAt)
+export function subjectSessionCookieOptions(
+  expiresAt: Date,
+  nodeEnv: string = env.NODE_ENV,
+): CookieOptions {
+  return cookieOptions(expiresAt, nodeEnv)
 }
 
-function cookieOptions(expiresAt: Date): CookieOptions {
-  const isProduction = env.NODE_ENV === 'production'
+function cookieOptions(expiresAt: Date, nodeEnv: string): CookieOptions {
+  const isProduction = nodeEnv === 'production'
 
   return {
     httpOnly: true,
@@ -25,8 +31,10 @@ function cookieOptions(expiresAt: Date): CookieOptions {
   }
 }
 
-export function clearSessionCookieOptions(): CookieOptions {
-  const isProduction = env.NODE_ENV === 'production'
+export function clearSessionCookieOptions(
+  nodeEnv: string = env.NODE_ENV,
+): CookieOptions {
+  const isProduction = nodeEnv === 'production'
 
   return {
     httpOnly: true,

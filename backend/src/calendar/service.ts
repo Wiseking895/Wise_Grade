@@ -2,20 +2,30 @@ import { HttpError } from '../errors/http-error.js'
 import type { AuditContext } from '../schools/repository.js'
 import {
   academicStartYearFor,
-  assessmentDeadlineFor,
   buildAcademicYearPlan,
-  examinationPeriodFor,
+  effectiveMilestones,
   nextPlanAfter,
   nextTransition,
   reportStatusFor,
   todayInCalendar,
 } from './logic.js'
 import type {
+  AcademicYearCreateInput,
+  AcademicYearUpdateInput,
+  ActiveSchoolSummary,
+  CalendarApplyPreview,
+  CalendarApplyResult,
+  CalendarApplySchoolPreview,
+  CalendarApplySchoolResult,
+  CalendarAuditActor,
   CalendarRepository,
+  CalendarResetInput,
   CalendarRunResult,
   CalendarStepResult,
+  CalendarTermConfig,
   CalendarTermDatesInput,
   CalendarTermRecord,
+  CalendarTermUpdateInput,
   CalendarTermView,
   CalendarYearRecord,
   CalendarYearView,
@@ -34,6 +44,7 @@ export interface CalendarServiceOptions {
 export interface CalendarService {
   getSchoolCalendar(schoolId: string): Promise<SchoolCalendarView>
   listSchoolCalendars(): Promise<SchoolCalendarView[]>
+  listEligibleSchools(): Promise<ActiveSchoolSummary[]>
   runSchool(
     schoolId: string,
     trigger?: 'SCHEDULER' | 'PLATFORM',
@@ -58,16 +69,67 @@ export interface CalendarService {
     schoolId: string,
     limit?: number,
   ): Promise<import('./types.js').CalendarTransitionRecord[]>
+
+  createYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    input: AcademicYearCreateInput,
+  ): Promise<CalendarYearView>
+  updateYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+    input: AcademicYearUpdateInput,
+  ): Promise<CalendarYearView>
+  upsertTerm(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+    sequence: number,
+    input: CalendarTermUpdateInput,
+  ): Promise<CalendarTermView>
+  activateYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+  ): Promise<CalendarYearView>
+  deactivateYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+  ): Promise<CalendarYearView>
+  archiveYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+  ): Promise<CalendarYearView>
+  resetYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+    input: CalendarResetInput,
+  ): Promise<{ year: CalendarYearView; changes: string[] }>
+  previewApply(
+    actor: CalendarAuditActor,
+    sourceSchoolId: string,
+    yearId: string,
+    schoolIds?: string[],
+  ): Promise<CalendarApplyPreview>
+  applyCalendar(
+    actor: CalendarAuditActor,
+    sourceSchoolId: string,
+    yearId: string,
+    schoolIds?: string[],
+  ): Promise<CalendarApplyResult>
 }
 
 function toTermView(term: CalendarTermRecord): CalendarTermView {
-  const examination = examinationPeriodFor(term.endsOn)
+  const milestones = effectiveMilestones(term)
 
   return {
     ...term,
-    assessmentDeadline: assessmentDeadlineFor(term.endsOn),
-    examinationStartsOn: examination.startsOn,
-    examinationEndsOn: examination.endsOn,
+    ...milestones,
+    datesConfirmed: term.datesConfirmedAt !== null,
     reportStatus: reportStatusFor(term),
   }
 }
@@ -102,6 +164,7 @@ export function buildCalendarView(
       .flatMap((year) => year.terms)
       .filter(
         (term) =>
+          term.datesConfirmed &&
           term.status === 'PLANNED' &&
           term.startsOn > serverDate &&
           term.id !== currentTerm?.id,
@@ -607,14 +670,421 @@ export function createCalendarService(
     return { closed: true, term: toTermView(updatedTerm), completion }
   }
 
+  function auditFrom(actor: CalendarAuditActor): AuditContext {
+    return {
+      actorUserId: actor.actorUserId,
+      ipAddress: actor.ipAddress ?? null,
+      userAgent: actor.userAgent ?? 'platform-calendar',
+    }
+  }
+
+  function termConfigFromRecord(term: CalendarTermRecord): CalendarTermConfig {
+    return {
+      name: term.name,
+      sequence: term.sequence,
+      startsOn: term.startsOn,
+      endsOn: term.endsOn,
+      ...effectiveMilestones(term),
+      datesConfirmed: term.datesConfirmedAt !== null,
+    }
+  }
+
+  function configForYear(
+    calendar: SchoolCalendarRecord,
+    yearId: string,
+  ): { year: CalendarYearRecord; config: AcademicYearCreateInput } {
+    const year = calendar.years.find((item) => item.id === yearId)
+
+    if (!year) {
+      throw new HttpError(404, 'Academic year not found')
+    }
+
+    return {
+      year,
+      config: {
+        name: year.name,
+        startsOn: year.startsOn,
+        endsOn: year.endsOn,
+        activate: year.isCurrent,
+        terms: year.terms.map(termConfigFromRecord),
+      },
+    }
+  }
+
+  async function resolveTargets(
+    schoolIds?: string[],
+  ): Promise<ActiveSchoolSummary[]> {
+    const eligible = await repository.listActiveSchools()
+
+    if (!schoolIds || schoolIds.length === 0) {
+      return eligible
+    }
+
+    const byId = new Map(eligible.map((school) => [school.id, school]))
+    const missing = schoolIds.filter((id) => !byId.has(id))
+
+    if (missing.length > 0) {
+      throw new HttpError(
+        400,
+        'One or more selected schools are not eligible for calendar distribution',
+        missing.map((id) => ({ field: 'schoolIds', message: id })),
+      )
+    }
+
+    const unique = Array.from(new Set(schoolIds))
+
+    return unique.map((id) => byId.get(id)!)
+  }
+
+  function previewSchool(
+    school: ActiveSchoolSummary,
+    calendar: SchoolCalendarRecord | null,
+    config: AcademicYearCreateInput,
+  ): CalendarApplySchoolPreview {
+    const base = {
+      schoolId: school.id,
+      schoolName: school.name,
+      termCount: config.terms.length,
+    }
+
+    if (!calendar) {
+      return {
+        ...base,
+        action: 'CREATE',
+        changes: [
+          `${config.name} will be created with ${config.terms.length} configured term(s)`,
+        ],
+        warnings: [],
+      }
+    }
+
+    const existing = calendar.years.find((year) => year.name === config.name)
+
+    if (!existing) {
+      return {
+        ...base,
+        action: 'CREATE',
+        changes: [
+          `${config.name} will be created with ${config.terms.length} configured term(s)`,
+        ],
+        warnings: [],
+      }
+    }
+
+    const changes: string[] = []
+    const warnings: string[] = []
+
+    if (existing.isArchived) {
+      warnings.push(
+        `${config.name} is archived in this school; it remains read-only history.`,
+      )
+    }
+
+    if (existing.startsOn !== config.startsOn) {
+      changes.push(
+        `Academic year opening: ${existing.startsOn} → ${config.startsOn}`,
+      )
+    }
+    if (existing.endsOn !== config.endsOn) {
+      changes.push(
+        `Academic year closing: ${existing.endsOn} → ${config.endsOn}`,
+      )
+    }
+
+    const termBySequence = new Map(
+      existing.terms.map((term) => [term.sequence, term]),
+    )
+    let termChanges = 0
+
+    for (const termConfig of config.terms) {
+      const current = termBySequence.get(termConfig.sequence)
+
+      if (!current) {
+        changes.push(`${termConfig.name} will be created`)
+        termChanges += 1
+        continue
+      }
+
+      termBySequence.delete(termConfig.sequence)
+      const milestones = effectiveMilestones(current)
+
+      if (current.name !== termConfig.name) {
+        changes.push(`${current.name} renamed to ${termConfig.name}`)
+        termChanges += 1
+      }
+      if (current.startsOn !== termConfig.startsOn) {
+        changes.push(
+          `${termConfig.name} opening: ${current.startsOn} → ${termConfig.startsOn}`,
+        )
+        termChanges += 1
+      }
+      if (current.endsOn !== termConfig.endsOn) {
+        changes.push(
+          `${termConfig.name} closing: ${current.endsOn} → ${termConfig.endsOn}`,
+        )
+        termChanges += 1
+      }
+      if (milestones.assessmentDeadline !== termConfig.assessmentDeadline) {
+        changes.push(
+          `${termConfig.name} assessment deadline: ${milestones.assessmentDeadline} → ${termConfig.assessmentDeadline}`,
+        )
+        termChanges += 1
+      }
+      if (milestones.examinationStartsOn !== termConfig.examinationStartsOn) {
+        changes.push(
+          `${termConfig.name} examination start: ${milestones.examinationStartsOn} → ${termConfig.examinationStartsOn}`,
+        )
+        termChanges += 1
+      }
+      if (milestones.examinationEndsOn !== termConfig.examinationEndsOn) {
+        changes.push(
+          `${termConfig.name} examination end: ${milestones.examinationEndsOn} → ${termConfig.examinationEndsOn}`,
+        )
+        termChanges += 1
+      }
+
+      const currentConfirmed = current.datesConfirmedAt !== null
+
+      if (currentConfirmed !== termConfig.datesConfirmed) {
+        changes.push(
+          `${termConfig.name} will be marked ${termConfig.datesConfirmed ? 'confirmed' : 'awaiting confirmation'}`,
+        )
+        termChanges += 1
+      }
+    }
+
+    for (const preserved of termBySequence.values()) {
+      warnings.push(
+        `${preserved.name} is not part of the distributed calendar and will be preserved unchanged.`,
+      )
+    }
+
+    const hasYearChanges =
+      existing.startsOn !== config.startsOn ||
+      existing.endsOn !== config.endsOn
+
+    return {
+      ...base,
+      action: hasYearChanges || termChanges > 0 ? 'UPDATE' : 'UNCHANGED',
+      changes,
+      warnings,
+    }
+  }
+
+  async function createYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    input: AcademicYearCreateInput,
+  ): Promise<CalendarYearView> {
+    const year = await repository.createAcademicYear(
+      schoolId,
+      input,
+      auditFrom(actor),
+    )
+
+    return toYearView(year)
+  }
+
+  async function updateYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+    input: AcademicYearUpdateInput,
+  ): Promise<CalendarYearView> {
+    const year = await repository.updateAcademicYear(
+      schoolId,
+      yearId,
+      input,
+      auditFrom(actor),
+    )
+
+    return toYearView(year)
+  }
+
+  async function upsertTerm(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+    sequence: number,
+    input: CalendarTermUpdateInput,
+  ): Promise<CalendarTermView> {
+    const term = await repository.upsertTerm(
+      schoolId,
+      yearId,
+      sequence,
+      input,
+      auditFrom(actor),
+    )
+
+    return toTermView(term)
+  }
+
+  async function activateYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+  ): Promise<CalendarYearView> {
+    const year = await repository.activateAcademicYear(
+      schoolId,
+      yearId,
+      now(),
+      auditFrom(actor),
+    )
+
+    return toYearView(year)
+  }
+
+  async function deactivateYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+  ): Promise<CalendarYearView> {
+    const year = await repository.deactivateAcademicYear(
+      schoolId,
+      yearId,
+      auditFrom(actor),
+    )
+
+    return toYearView(year)
+  }
+
+  async function archiveYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+  ): Promise<CalendarYearView> {
+    const year = await repository.archiveAcademicYear(
+      schoolId,
+      yearId,
+      now(),
+      auditFrom(actor),
+    )
+
+    return toYearView(year)
+  }
+
+  async function resetYear(
+    actor: CalendarAuditActor,
+    schoolId: string,
+    yearId: string,
+    input: CalendarResetInput,
+  ): Promise<{ year: CalendarYearView; changes: string[] }> {
+    const result = await repository.resetAcademicYear(
+      schoolId,
+      yearId,
+      input,
+      now(),
+      auditFrom(actor),
+    )
+
+    return { year: toYearView(result.year), changes: result.changes }
+  }
+
+  async function previewApply(
+    _actor: CalendarAuditActor,
+    sourceSchoolId: string,
+    yearId: string,
+    schoolIds?: string[],
+  ): Promise<CalendarApplyPreview> {
+    const source = await loadCalendar(sourceSchoolId)
+    const { config } = configForYear(source, yearId)
+    const targets = await resolveTargets(schoolIds)
+    const schools: CalendarApplySchoolPreview[] = []
+
+    for (const school of targets) {
+      const calendar = await repository.getSchoolCalendar(school.id)
+      schools.push(previewSchool(school, calendar, config))
+    }
+
+    return {
+      sourceSchoolId,
+      sourceSchoolName: source.schoolName,
+      yearId,
+      yearName: config.name,
+      totalSchools: schools.length,
+      affectedSchools: schools.filter((school) => school.action !== 'UNCHANGED')
+        .length,
+      schools,
+    }
+  }
+
+  async function applyCalendar(
+    actor: CalendarAuditActor,
+    sourceSchoolId: string,
+    yearId: string,
+    schoolIds?: string[],
+  ): Promise<CalendarApplyResult> {
+    const source = await loadCalendar(sourceSchoolId)
+    const { config } = configForYear(source, yearId)
+    const targets = await resolveTargets(schoolIds)
+    const applyAt = now()
+    const audit = auditFrom(actor)
+    const results: CalendarApplySchoolResult[] = []
+
+    for (const school of targets) {
+      try {
+        // Each school is its own transaction. A failure is captured per school
+        // and never hides the success or failure of another school.
+        const applied = await repository.applyAcademicYear(
+          school.id,
+          config,
+          applyAt,
+          audit,
+        )
+
+        results.push({
+          schoolId: school.id,
+          schoolName: school.name,
+          status: 'SUCCEEDED',
+          action: applied.action,
+          termCount: applied.termCount,
+          warnings: applied.warnings,
+        })
+      } catch (error) {
+        const message = errorMessage(error)
+        logger(
+          `[calendar] distribution to school ${school.id} failed: ${message}`,
+        )
+        results.push({
+          schoolId: school.id,
+          schoolName: school.name,
+          status: 'FAILED',
+          warnings: [],
+          error: message,
+        })
+      }
+    }
+
+    return {
+      sourceSchoolId,
+      sourceSchoolName: source.schoolName,
+      yearId,
+      yearName: config.name,
+      totalSchools: results.length,
+      succeeded: results.filter((result) => result.status === 'SUCCEEDED').length,
+      failed: results.filter((result) => result.status === 'FAILED').length,
+      results,
+    }
+  }
+
   return {
     getSchoolCalendar,
     listSchoolCalendars,
+    listEligibleSchools: () => repository.listActiveSchools(),
     runSchool,
     runAll,
     updateTermDates,
     closeTermNow,
     listTransitions: (schoolId, limit = 50) =>
       repository.listTransitions(schoolId, limit),
+    createYear,
+    updateYear,
+    upsertTerm,
+    activateYear,
+    deactivateYear,
+    archiveYear,
+    resetYear,
+    previewApply,
+    applyCalendar,
   }
 }

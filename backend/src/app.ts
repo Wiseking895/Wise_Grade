@@ -18,6 +18,14 @@ import { createCalendarService } from './calendar/service.js'
 import { createPrismaCalendarRepository } from './calendar/prisma-repository.js'
 import { createReportPreparation } from './calendar/report-preparation.js'
 import {
+  createCalendarSchedulerRunner,
+  notifyCalendarSchedulerFailure,
+  recordCalendarSchedulerRun,
+  type CalendarSchedulerRunner,
+} from './calendar/scheduler-run.js'
+import { createPrismaSchedulerLock } from './calendar/scheduler-lock.js'
+import { createCalendarSchedulerRouter } from './calendar/scheduler-routes.js'
+import {
   createPlatformCalendarRouter,
   createSchoolCalendarRouter,
 } from './calendar/routes.js'
@@ -105,6 +113,13 @@ export interface AppOptions {
   /** Injectable automatic academic calendar persistence and service. */
   calendarRepository?: CalendarRepository
   calendarService?: CalendarService
+  /**
+   * Injectable scheduled-calendar runner. Production uses the PostgreSQL-locked
+   * runner; tests inject a deterministic stub.
+   */
+  calendarScheduler?: CalendarSchedulerRunner
+  /** Override CRON_SECRET. An empty string deliberately disables the endpoint. */
+  cronSecret?: string
   /** Injectable Phase 9 platform administration persistence. */
   platformRepository?: PlatformRepository
   /** Injectable platform operations persistence, health, security and notifier. */
@@ -188,6 +203,23 @@ export function createApp(options: AppOptions = {}): Express {
     options.platformOperationsRepository ?? createPrismaOperationsRepository()
   const platformNotifier =
     options.platformNotifier ?? createPlatformNotifier(platformOperations)
+  // The long-running interval scheduler in src/index.ts is for local
+  // development. Production on Vercel invokes the same runner through the
+  // protected /api/internal/calendar endpoint. The PostgreSQL lock prevents
+  // overlapping runs across concurrent serverless instances.
+  const calendarScheduler =
+    options.calendarScheduler ??
+    createCalendarSchedulerRunner({
+      service: calendarService,
+      recordRun: (summary, trigger) =>
+        recordCalendarSchedulerRun(platformOperations, summary, trigger),
+      notifyFailure: (summary) =>
+        notifyCalendarSchedulerFailure(platformNotifier, summary),
+      lock: createPrismaSchedulerLock(),
+      enabled: env.CALENDAR_SCHEDULER_ENABLED,
+    })
+  const cronSecret =
+    options.cronSecret !== undefined ? options.cronSecret : env.CRON_SECRET
   const platformHealth =
     options.platformHealthService ??
     createPlatformHealthService({
@@ -215,6 +247,10 @@ export function createApp(options: AppOptions = {}): Express {
     options.reverseGeocoder ?? reverseGeocoderFromEnvironment()
 
   app.disable('x-powered-by')
+  // Vercel terminates TLS at a single edge proxy. Trusting exactly one hop
+  // makes req.ip reflect the real client for rate limits and audit records
+  // without allowing a client to spoof the header through a chain of proxies.
+  app.set('trust proxy', 1)
 
   app.use(helmet())
   // CORS must run before every route, body parser and error handler so that
@@ -365,6 +401,7 @@ export function createApp(options: AppOptions = {}): Express {
       authRepository,
       calendarService,
       allowedOrigins,
+      { requireReauth: requireSensitiveReauth },
     ),
   )
   // Operational platform surfaces run before the generic router so their
@@ -394,7 +431,16 @@ export function createApp(options: AppOptions = {}): Express {
     ),
   )
 
+  // Protected scheduled-calendar trigger. It is mounted outside the cookie
+  // namespace, before the 404 handler, so Vercel Cron and an external worker
+  // can both invoke it. It never starts a timer and never calls listen.
+  app.use(
+    '/api/internal/calendar',
+    createCalendarSchedulerRouter(calendarScheduler, { secret: cronSecret }),
+  )
+
   app.locals.calendarService = calendarService
+  app.locals.calendarScheduler = calendarScheduler
   app.locals.platformOperations = platformOperations
   app.locals.platformNotifier = platformNotifier
 

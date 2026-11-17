@@ -52,9 +52,9 @@ interface SettingsFormState {
   attendanceRequired: boolean
   closingDate: string
   reopeningDate: string
-  emblemObjectKey: string
-  crestObjectKey: string
-  signatureObjectKey: string
+  emblemAssetId: string
+  crestAssetId: string
+  signatureAssetId: string
 }
 
 const EMPTY_FORM: SettingsFormState = {
@@ -65,9 +65,9 @@ const EMPTY_FORM: SettingsFormState = {
   attendanceRequired: false,
   closingDate: '',
   reopeningDate: '',
-  emblemObjectKey: '',
-  crestObjectKey: '',
-  signatureObjectKey: '',
+  emblemAssetId: '',
+  crestAssetId: '',
+  signatureAssetId: '',
 }
 
 function formFromSettings(settings: ReportSettings | null): SettingsFormState {
@@ -81,9 +81,9 @@ function formFromSettings(settings: ReportSettings | null): SettingsFormState {
     attendanceRequired: settings.attendanceRequired,
     closingDate: settings.closingDate?.slice(0, 10) ?? '',
     reopeningDate: settings.reopeningDate?.slice(0, 10) ?? '',
-    emblemObjectKey: settings.emblemObjectKey ?? '',
-    crestObjectKey: settings.crestObjectKey ?? '',
-    signatureObjectKey: settings.signatureObjectKey ?? '',
+    emblemAssetId: settings.emblemAssetId ?? '',
+    crestAssetId: settings.crestAssetId ?? '',
+    signatureAssetId: settings.signatureAssetId ?? '',
   }
 }
 
@@ -201,11 +201,11 @@ export default function ReportSettingsPage() {
       })
       const key =
         kind === 'EMBLEM'
-          ? 'emblemObjectKey'
+          ? 'emblemAssetId'
           : kind === 'CREST'
-            ? 'crestObjectKey'
-            : 'signatureObjectKey'
-      patchForm({ [key]: response.asset.storageKey })
+            ? 'crestAssetId'
+            : 'signatureAssetId'
+      patchForm({ [key]: response.asset.id })
       await loadAssets()
       setSuccess(`${ASSET_LABELS[kind]} uploaded. Save settings to attach it.`)
     } catch (cause) {
@@ -236,9 +236,9 @@ export default function ReportSettingsPage() {
         attendanceRequired: form.attendanceRequired,
         closingDate: form.closingDate || null,
         reopeningDate: form.reopeningDate || null,
-        emblemObjectKey: form.emblemObjectKey || null,
-        crestObjectKey: form.crestObjectKey || null,
-        signatureObjectKey: form.signatureObjectKey || null,
+        emblemAssetId: form.emblemAssetId || null,
+        crestAssetId: form.crestAssetId || null,
+        signatureAssetId: form.signatureAssetId || null,
       })
       setSettings(response.settings)
       setForm(formFromSettings(response.settings))
@@ -357,14 +357,14 @@ export default function ReportSettingsPage() {
             <div className="mt-5 grid gap-5 lg:grid-cols-3">
               {(
                 [
-                  ['EMBLEM', 'emblemObjectKey'],
-                  ['CREST', 'crestObjectKey'],
-                  ['SIGNATURE', 'signatureObjectKey'],
+                  ['EMBLEM', 'emblemAssetId'],
+                  ['CREST', 'crestAssetId'],
+                  ['SIGNATURE', 'signatureAssetId'],
                 ] as const
               ).map(([kind, key]) => {
                 const kindAssets = assets.filter((asset) => asset.kind === kind)
                 const selectedAsset = kindAssets.find(
-                  (asset) => asset.storageKey === form[key],
+                  (asset) => asset.id === form[key],
                 )
 
                 return (
@@ -389,7 +389,7 @@ export default function ReportSettingsPage() {
                     >
                       <option value="">No image (reserve blank space)</option>
                       {kindAssets.map((asset) => (
-                        <option key={asset.id} value={asset.storageKey}>
+                        <option key={asset.id} value={asset.id}>
                           {asset.originalName} ({formatBytes(asset.byteSize)})
                         </option>
                       ))}

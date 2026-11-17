@@ -1,10 +1,20 @@
 import type { RegisterSchoolInput } from '../auth/types'
 import { apiRequest, downloadFile } from '../lib/api'
 import type {
+  PlatformAcademicYearCreateInput,
+  PlatformAcademicYearUpdateInput,
   PlatformAccount,
   PlatformAccountSession,
   PlatformAuditPage,
   PlatformAuditSource,
+  PlatformCalendarApplyInput,
+  PlatformCalendarApplyPreview,
+  PlatformCalendarApplyResult,
+  PlatformCalendarResetInput,
+  PlatformCalendarSchoolSummary,
+  PlatformCalendarTerm,
+  PlatformCalendarTermUpdate,
+  PlatformCalendarYear,
   PlatformMonitoring,
   PlatformOverview,
   PlatformSchoolCalendar,
@@ -228,6 +238,109 @@ export function closePlatformTerm(schoolId: string, termId: string) {
   return apiRequest<unknown>(
     `/api/platform/calendar/${schoolId}/terms/${termId}/close`,
     { method: 'POST' },
+  )
+}
+
+export function listPlatformCalendarSchools() {
+  return apiRequest<{ schools: PlatformCalendarSchoolSummary[] }>(
+    '/api/platform/calendar/schools',
+  )
+}
+
+export function createPlatformAcademicYear(
+  schoolId: string,
+  input: PlatformAcademicYearCreateInput,
+) {
+  return apiRequest<{ year: PlatformCalendarYear }>(
+    `/api/platform/calendar/${schoolId}/years`,
+    { method: 'POST', body: input },
+  )
+}
+
+export function updatePlatformAcademicYear(
+  schoolId: string,
+  yearId: string,
+  input: PlatformAcademicYearUpdateInput,
+) {
+  return apiRequest<{ year: PlatformCalendarYear }>(
+    `/api/platform/calendar/${schoolId}/years/${yearId}`,
+    { method: 'PUT', body: input },
+  )
+}
+
+export function upsertPlatformCalendarTerm(
+  schoolId: string,
+  yearId: string,
+  sequence: number,
+  input: PlatformCalendarTermUpdate,
+) {
+  return apiRequest<{ term: PlatformCalendarTerm }>(
+    `/api/platform/calendar/${schoolId}/years/${yearId}/terms/${sequence}`,
+    { method: 'PUT', body: input },
+  )
+}
+
+export function activatePlatformAcademicYear(
+  schoolId: string,
+  yearId: string,
+) {
+  return apiRequest<{ year: PlatformCalendarYear }>(
+    `/api/platform/calendar/${schoolId}/years/${yearId}/activate`,
+    { method: 'POST' },
+  )
+}
+
+export function deactivatePlatformAcademicYear(
+  schoolId: string,
+  yearId: string,
+) {
+  return apiRequest<{ year: PlatformCalendarYear }>(
+    `/api/platform/calendar/${schoolId}/years/${yearId}/deactivate`,
+    { method: 'POST' },
+  )
+}
+
+export function archivePlatformAcademicYear(
+  schoolId: string,
+  yearId: string,
+  reauthToken: string,
+) {
+  return apiRequest<{ year: PlatformCalendarYear }>(
+    `/api/platform/calendar/${schoolId}/years/${yearId}/archive`,
+    {
+      method: 'POST',
+      headers: { 'X-Platform-Reauth': reauthToken },
+    },
+  )
+}
+
+export function resetPlatformAcademicYear(
+  schoolId: string,
+  yearId: string,
+  input: PlatformCalendarResetInput,
+  reauthToken: string,
+) {
+  return apiRequest<{
+    year: PlatformCalendarYear
+    changes: string[]
+  }>(`/api/platform/calendar/${schoolId}/years/${yearId}/reset`, {
+    method: 'POST',
+    body: input,
+    headers: { 'X-Platform-Reauth': reauthToken },
+  })
+}
+
+export function previewPlatformCalendarApply(input: PlatformCalendarApplyInput) {
+  return apiRequest<{ preview: PlatformCalendarApplyPreview }>(
+    '/api/platform/calendar/apply/preview',
+    { method: 'POST', body: input },
+  )
+}
+
+export function applyPlatformCalendar(input: PlatformCalendarApplyInput) {
+  return apiRequest<{ result: PlatformCalendarApplyResult }>(
+    '/api/platform/calendar/apply',
+    { method: 'POST', body: input },
   )
 }
 

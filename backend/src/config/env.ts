@@ -113,6 +113,17 @@ const envSchema = z
     CORS_ORIGINS: z.string().trim().min(1).optional(),
     FRONTEND_URL: z.url().default('http://localhost:5173'),
     DATABASE_URL: z.string().trim().min(1).optional(),
+    /**
+     * Optional direct (non-pooled) Neon connection used only by Prisma
+     * migration commands. The application always uses DATABASE_URL, which
+     * should point at the pooled endpoint on serverless platforms.
+     */
+    DIRECT_DATABASE_URL: z.string().trim().min(1).optional(),
+    /**
+     * Maximum pg pool size per function instance. Serverless platforms should
+     * keep this small because Neon already pools connections at the proxy.
+     */
+    DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(5),
 
     // AUTH_SECRET also derives the AES-256-GCM key that encrypts optional
     // platform-admin MFA secrets at rest. Development may fall back to a
@@ -133,6 +144,11 @@ const envSchema = z
       .min(1)
       .max(1440)
       .default(60),
+    /**
+     * Shared secret for the protected scheduled-calendar endpoint. Vercel Cron
+     * sends it automatically as `Authorization: Bearer $CRON_SECRET`.
+     */
+    CRON_SECRET: z.string().min(16).optional(),
     R2_ACCOUNT_ID: z.string().min(1).optional(),
     R2_ACCESS_KEY_ID: z.string().min(1).optional(),
     R2_SECRET_ACCESS_KEY: z.string().min(1).optional(),
@@ -189,6 +205,18 @@ const envSchema = z
         code: 'custom',
         path: ['FRONTEND_URL'],
         message: (error as Error).message,
+      })
+    }
+
+    // A production deployment that enables the scheduler but cannot protect
+    // its trigger would either never run or run unauthenticated. Fail loudly
+    // instead of silently disabling an important production job.
+    if (value.CALENDAR_SCHEDULER_ENABLED && !value.CRON_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CRON_SECRET'],
+        message:
+          'CRON_SECRET is required in production when CALENDAR_SCHEDULER_ENABLED is true. Set CALENDAR_SCHEDULER_ENABLED=false to disable scheduled calendar runs explicitly.',
       })
     }
   })

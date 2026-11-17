@@ -67,6 +67,8 @@ export interface CalendarTerm extends AcademicTerm {
   assessmentDeadline: string
   examinationStartsOn: string
   examinationEndsOn: string
+  datesConfirmedAt: string | null
+  datesConfirmed: boolean
   reportStatus: ReportPreparationStatus
 }
 

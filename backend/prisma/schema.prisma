@@ -1911,6 +1911,18 @@ model SchedulerRun {
   @@index([status, createdAt])
 }
 
+/// One-row advisory lock that prevents overlapping calendar scheduler runs
+/// across concurrent Vercel serverless invocations. The lease expires so a
+/// crashed function can never block the scheduler permanently. It stores no
+/// credentials and no calendar data.
+model SchedulerLock {
+  key       String    @id @db.VarChar(80)
+  lockedAt  DateTime?
+  lockedBy  String?   @db.VarChar(120)
+  expiresAt DateTime?
+  updatedAt DateTime  @updatedAt
+}
+
 /// Short-lived, single-use proof that the platform administrator reauthenticated
 /// for a sensitive action. Only the SHA-256 hash of the opaque token is stored.
 model PlatformReauthGrant {

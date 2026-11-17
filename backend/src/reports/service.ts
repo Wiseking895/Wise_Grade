@@ -27,6 +27,7 @@ import type {
   ReportRepository,
   ReportSettingsInput,
   ReportSettingsRecord,
+  PublicReportSettings,
   ReportVersionSummary,
   StoredObject,
 } from './repository.js'
@@ -190,21 +191,61 @@ export class ReportService {
   async getSettings(
     actor: ReportActor,
     academicTermId: string,
-  ): Promise<ReportSettingsRecord | null> {
-    return this.repository.getSettings(actor, academicTermId)
+  ): Promise<PublicReportSettings | null> {
+    const settings = await this.repository.getSettings(actor, academicTermId)
+
+    return settings ? this.publicSettings(actor, settings) : null
   }
 
   async updateSettings(
     actor: ReportActor,
     input: ReportSettingsInput,
     audit: ReportAuditContext,
-  ): Promise<ReportSettingsRecord> {
+  ): Promise<PublicReportSettings> {
+    const resolved: ReportSettingsInput = { ...input }
+    const bindings = [
+      {
+        kind: 'EMBLEM',
+        assetId: input.emblemAssetId,
+        field: 'emblemObjectKey',
+      },
+      {
+        kind: 'CREST',
+        assetId: input.crestAssetId,
+        field: 'crestObjectKey',
+      },
+      {
+        kind: 'SIGNATURE',
+        assetId: input.signatureAssetId,
+        field: 'signatureObjectKey',
+      },
+    ] as const
+
+    for (const binding of bindings) {
+      if (binding.assetId === undefined) {
+        continue
+      }
+
+      if (binding.assetId === null) {
+        resolved[binding.field] = null
+        continue
+      }
+
+      const asset = await this.repository.getAsset(actor, binding.assetId)
+
+      if (!asset || asset.kind !== binding.kind) {
+        throw new HttpError(400, 'Selected branding asset was not found')
+      }
+
+      resolved[binding.field] = asset.storageKey
+    }
+
     const schoolPrefix = `schools/${actor.schoolId}/`
 
     for (const key of [
-      input.emblemObjectKey,
-      input.crestObjectKey,
-      input.signatureObjectKey,
+      resolved.emblemObjectKey,
+      resolved.crestObjectKey,
+      resolved.signatureObjectKey,
     ]) {
       if (key === undefined || key === null) {
         continue
@@ -218,7 +259,44 @@ export class ReportService {
       }
     }
 
-    return this.repository.updateSettings(actor, input, audit)
+    const saved = await this.repository.updateSettings(actor, resolved, audit)
+
+    return this.publicSettings(actor, saved)
+  }
+
+  /**
+   * Converts internal settings (which store private object keys) into the
+   * client-facing shape. Branding is referenced by asset id only.
+   */
+  private async publicSettings(
+    actor: ReportActor,
+    settings: ReportSettingsRecord,
+  ): Promise<PublicReportSettings> {
+    const assets = await this.repository.listAssets(actor)
+    const assetIdByKey = new Map(
+      assets.map((asset) => [asset.storageKey, asset.id]),
+    )
+    const assetIdFor = (key: string | null) =>
+      key ? (assetIdByKey.get(key) ?? null) : null
+
+    return {
+      id: settings.id,
+      schoolId: settings.schoolId,
+      academicYearId: settings.academicYearId,
+      academicTermId: settings.academicTermId,
+      emblemAssetId: assetIdFor(settings.emblemObjectKey),
+      crestAssetId: assetIdFor(settings.crestObjectKey),
+      signatureAssetId: assetIdFor(settings.signatureObjectKey),
+      headteacherLabel: settings.headteacherLabel,
+      rankingEnabled: settings.rankingEnabled,
+      tiePolicy: settings.tiePolicy,
+      aggregatePolicy: settings.aggregatePolicy,
+      attendanceRequired: settings.attendanceRequired,
+      closingDate: settings.closingDate,
+      reopeningDate: settings.reopeningDate,
+      createdAt: settings.createdAt,
+      updatedAt: settings.updatedAt,
+    }
   }
 
   async listAssets(actor: ReportActor): Promise<ReportAssetRecord[]> {

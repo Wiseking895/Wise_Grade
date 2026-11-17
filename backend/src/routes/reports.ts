@@ -14,9 +14,10 @@ import { HttpError } from '../errors/http-error.js'
 import { createAuthenticate } from '../middleware/authenticate.js'
 import { requireRole, requireSchoolAccess } from '../middleware/authorize.js'
 import { requireTrustedOrigin } from '../middleware/csrf.js'
-import type {
-  ReportActor,
-  ReportAuditContext,
+import {
+  toPublicReportAsset,
+  type ReportActor,
+  type ReportAuditContext,
 } from '../reports/repository.js'
 import type { ReportReleaseActor } from '../reports/release-repository.js'
 import type { ReportService } from '../reports/service.js'
@@ -217,7 +218,9 @@ export function createReportsRouter(
     async (req, res, next) => {
       try {
         const assets = await service.listAssets(actorFromRequest(req))
-        res.status(200).json({ data: { assets } })
+        res.status(200).json({
+          data: { assets: assets.map(toPublicReportAsset) },
+        })
       } catch (error) {
         next(error)
       }
@@ -235,7 +238,9 @@ export function createReportsRouter(
           input,
           auditFromRequest(req),
         )
-        res.status(201).json({ data: { asset } })
+        res.status(201).json({
+          data: { asset: toPublicReportAsset(asset) },
+        })
       } catch (error) {
         next(error)
       }

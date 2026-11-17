@@ -53,6 +53,13 @@ On Vercel, set the variable in **Project → Settings → Environment Variables*
 the Production (and Preview) environments, then redeploy; environment variable
 changes are only applied by a new build.
 
+The temporary value `https://api-placeholder.gradely.invalid` must be replaced
+with the real backend origin once `gradely-backend` is deployed. Update
+`VITE_API_URL`, redeploy the frontend, and make sure the backend's
+`CORS_ORIGINS`/`FRONTEND_URL` contain this exact frontend origin. See
+[`../backend/docs/VERCEL_DEPLOYMENT.md`](../backend/docs/VERCEL_DEPLOYMENT.md)
+for the full two-project sequence.
+
 Only browser-safe values may use the `VITE_` prefix. Never put database
 passwords, private API keys, storage secrets, payment secret keys, or webhook
 secrets in a frontend environment file.

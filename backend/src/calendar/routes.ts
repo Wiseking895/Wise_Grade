@@ -9,8 +9,15 @@ import {
 } from '../middleware/authorize.js'
 import { requireTrustedOrigin } from '../middleware/csrf.js'
 import type { CalendarService } from './service.js'
+import type { CalendarAuditActor } from './types.js'
 import {
+  academicYearCreateSchema,
+  academicYearResetSchema,
+  academicYearUpdateSchema,
+  calendarApplyPreviewSchema,
+  calendarApplySchema,
   calendarSchoolQuerySchema,
+  calendarTermUpdateSchema,
   termDatesCorrectionSchema,
   transitionListQuerySchema,
 } from './validation.js'
@@ -39,6 +46,24 @@ function routeParam(req: Request, name: string): string {
   }
 
   return value
+}
+
+function sequenceParam(req: Request): number {
+  const sequence = Number(routeParam(req, 'sequence'))
+
+  if (!Number.isInteger(sequence) || sequence < 1 || sequence > 3) {
+    throw new HttpError(400, 'Term sequence must be 1, 2 or 3')
+  }
+
+  return sequence
+}
+
+function auditActor(req: Request): CalendarAuditActor {
+  return {
+    actorUserId: requireAuth(req).user.id,
+    ipAddress: req.ip ?? null,
+    userAgent: req.get('user-agent') ?? null,
+  }
 }
 
 /**
@@ -74,22 +99,40 @@ export function createSchoolCalendarRouter(
   return router
 }
 
+export interface PlatformCalendarRouterOptions {
+  /** Sensitive reauthentication for reset and archive. */
+  requireReauth?: RequestHandler
+}
+
 /**
  * Platform-super-admin calendar operations. These are the only routes that can
- * correct configured dates, force a due transition, or close a term early. Even
- * here, closing still runs the completion checks and can never bypass them.
+ * create or correct central calendar configuration, distribute it to schools,
+ * or archive a completed academic year. School administrators and teachers
+ * never receive a write route.
  */
 export function createPlatformCalendarRouter(
   authRepository: AuthRepository,
   service: CalendarService,
   trustedOrigins: string[],
+  options: PlatformCalendarRouterOptions = {},
 ): Router {
   const router = Router()
   const authenticate = createAuthenticate(authRepository)
   const platformAdmin = requirePlatformAdmin()
   const trustedOrigin = requireTrustedOrigin(trustedOrigins)
+  const requireReauth: RequestHandler =
+    options.requireReauth ?? ((_req, _res, next) => next())
 
   router.use(authenticate, platformAdmin, trustedOrigin)
+
+  router.get('/schools', async (_req, res, next) => {
+    try {
+      const schools = await service.listEligibleSchools()
+      res.status(200).json({ data: { schools } })
+    } catch (error) {
+      next(error)
+    }
+  })
 
   router.get('/', async (req, res, next) => {
     try {
@@ -103,6 +146,164 @@ export function createPlatformCalendarRouter(
 
       const calendars = await service.listSchoolCalendars()
       res.status(200).json({ data: { calendars } })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  router.post('/:schoolId/years', async (req, res, next) => {
+    try {
+      const schoolId = routeParam(req, 'schoolId')
+      const input = parseBody(academicYearCreateSchema, req.body)
+      const year = await service.createYear(auditActor(req), schoolId, input)
+
+      res.status(201).json({ data: { year } })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  router.put('/:schoolId/years/:yearId', async (req, res, next) => {
+    try {
+      const schoolId = routeParam(req, 'schoolId')
+      const yearId = routeParam(req, 'yearId')
+      const input = parseBody(academicYearUpdateSchema, req.body)
+      const year = await service.updateYear(
+        auditActor(req),
+        schoolId,
+        yearId,
+        input,
+      )
+
+      res.status(200).json({ data: { year } })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  router.put(
+    '/:schoolId/years/:yearId/terms/:sequence',
+    async (req, res, next) => {
+      try {
+        const schoolId = routeParam(req, 'schoolId')
+        const yearId = routeParam(req, 'yearId')
+        const sequence = sequenceParam(req)
+        const input = parseBody(calendarTermUpdateSchema, req.body)
+        const term = await service.upsertTerm(
+          auditActor(req),
+          schoolId,
+          yearId,
+          sequence,
+          input,
+        )
+
+        res.status(200).json({ data: { term } })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  router.post('/:schoolId/years/:yearId/activate', async (req, res, next) => {
+    try {
+      const schoolId = routeParam(req, 'schoolId')
+      const yearId = routeParam(req, 'yearId')
+      const year = await service.activateYear(auditActor(req), schoolId, yearId)
+
+      res.status(200).json({ data: { year } })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  router.post(
+    '/:schoolId/years/:yearId/deactivate',
+    async (req, res, next) => {
+      try {
+        const schoolId = routeParam(req, 'schoolId')
+        const yearId = routeParam(req, 'yearId')
+        const year = await service.deactivateYear(
+          auditActor(req),
+          schoolId,
+          yearId,
+        )
+
+        res.status(200).json({ data: { year } })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  router.post(
+    '/:schoolId/years/:yearId/reset',
+    requireReauth,
+    async (req, res, next) => {
+      try {
+        const schoolId = routeParam(req, 'schoolId')
+        const yearId = routeParam(req, 'yearId')
+        const input = parseBody(academicYearResetSchema, req.body)
+        const result = await service.resetYear(
+          auditActor(req),
+          schoolId,
+          yearId,
+          input,
+        )
+
+        res.status(200).json({ data: result })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  router.post(
+    '/:schoolId/years/:yearId/archive',
+    requireReauth,
+    async (req, res, next) => {
+      try {
+        const schoolId = routeParam(req, 'schoolId')
+        const yearId = routeParam(req, 'yearId')
+        const year = await service.archiveYear(
+          auditActor(req),
+          schoolId,
+          yearId,
+        )
+
+        res.status(200).json({ data: { year } })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  router.post('/apply/preview', async (req, res, next) => {
+    try {
+      const input = parseBody(calendarApplyPreviewSchema, req.body)
+      const preview = await service.previewApply(
+        auditActor(req),
+        input.sourceSchoolId,
+        input.yearId,
+        input.schoolIds,
+      )
+
+      res.status(200).json({ data: { preview } })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  router.post('/apply', async (req, res, next) => {
+    try {
+      const input = parseBody(calendarApplySchema, req.body)
+      const result = await service.applyCalendar(
+        auditActor(req),
+        input.sourceSchoolId,
+        input.yearId,
+        input.schoolIds,
+      )
+
+      res.status(200).json({ data: { result } })
     } catch (error) {
       next(error)
     }

@@ -233,7 +233,96 @@ export interface PlatformCalendarTerm {
   assessmentDeadline: string
   examinationStartsOn: string
   examinationEndsOn: string
+  datesConfirmedAt: string | null
+  datesConfirmed: boolean
   reportStatus: string
+}
+
+export interface PlatformCalendarTermConfig {
+  name: string
+  sequence: number
+  startsOn: string
+  endsOn: string
+  assessmentDeadline: string
+  examinationStartsOn: string
+  examinationEndsOn: string
+  datesConfirmed: boolean
+}
+
+export interface PlatformCalendarTermUpdate
+  extends Omit<PlatformCalendarTermConfig, 'sequence'> {
+  acknowledgeImpacts?: boolean
+}
+
+export interface PlatformAcademicYearCreateInput {
+  name: string
+  startsOn: string
+  endsOn: string
+  activate: boolean
+  terms: PlatformCalendarTermConfig[]
+}
+
+export interface PlatformAcademicYearUpdateInput {
+  name: string
+  startsOn: string
+  endsOn: string
+}
+
+export interface PlatformCalendarResetInput
+  extends PlatformAcademicYearUpdateInput {
+  terms: PlatformCalendarTermConfig[]
+  acknowledgeImpacts: boolean
+}
+
+export interface PlatformCalendarSchoolSummary {
+  id: string
+  name: string
+}
+
+export interface PlatformCalendarApplyInput {
+  sourceSchoolId: string
+  yearId: string
+  schoolIds?: string[]
+}
+
+export interface PlatformCalendarApplySchoolPreview {
+  schoolId: string
+  schoolName: string
+  action: 'CREATE' | 'UPDATE' | 'UNCHANGED'
+  termCount: number
+  changes: string[]
+  warnings: string[]
+}
+
+export interface PlatformCalendarApplyPreview {
+  sourceSchoolId: string
+  sourceSchoolName: string
+  yearId: string
+  yearName: string
+  totalSchools: number
+  affectedSchools: number
+  schools: PlatformCalendarApplySchoolPreview[]
+}
+
+export interface PlatformCalendarApplySchoolResult {
+  schoolId: string
+  schoolName: string
+  status: 'SUCCEEDED' | 'FAILED'
+  action?: 'CREATED' | 'UPDATED'
+  termCount?: number
+  warnings: string[]
+  error?: string
+}
+
+export interface PlatformCalendarApplyResult {
+  sourceSchoolId: string
+  sourceSchoolName: string
+  yearId: string
+  yearName: string
+  totalSchools: number
+  succeeded: number
+  failed: number
+  results: PlatformCalendarApplySchoolResult[]
 }
 
 export interface PlatformCalendarYear {

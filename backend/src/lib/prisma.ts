@@ -31,7 +31,16 @@ export function getPrismaClient(): PrismaClient {
   }
 
   if (!prismaClient) {
-    const adapter = new PrismaPg({ connectionString: env.DATABASE_URL })
+    const adapter = new PrismaPg({
+      connectionString: env.DATABASE_URL,
+      // Serverless instances are short-lived and Neon already multiplexes
+      // connections. A small pool avoids exhausting the database while still
+      // reusing connections across warm invocations of the same instance.
+      max: env.DATABASE_POOL_MAX,
+      connectionTimeoutMillis: 10_000,
+      idleTimeoutMillis: 30_000,
+      allowExitOnIdle: true,
+    })
     prismaClient = new PrismaClient({ adapter })
   }
 
