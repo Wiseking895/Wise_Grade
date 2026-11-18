@@ -28,7 +28,7 @@ path. Express therefore receives the same `req.url` it would locally.
 | `api/index.js` | Vercel function entry. Imports the compiled `dist/serverless.js`. |
 | `src/serverless.ts` | Caches one Express app per warm instance and adapts it to `(req, res)`. |
 | `src/index.ts` | Local development server. Keeps `app.listen()` and the interval scheduler. |
-| `vercel.json` | Build command, framework lock, all-path route to `/api` with the original request path, function limits and daily Cron. |
+| `vercel.json` | Build command, framework lock, explicit `dist` output directory, all-path route to `/api` with the original request path, function limits and daily Cron. |
 | `src/calendar/scheduler-routes.ts` | Protected `GET/POST /api/internal/calendar` trigger. |
 | `src/calendar/scheduler-run.ts` | Shared scheduler runner, audit history and failure notifications. |
 | `src/calendar/scheduler-lock.ts` | Single-row PostgreSQL lease that prevents overlapping runs. |
@@ -47,7 +47,7 @@ Confirm these settings before the first deploy:
   `"framework": null`, which is the same setting)
 - Build Command: `npm run build` (already in `vercel.json`)
 - Install Command: `npm ci` (already in `vercel.json`)
-- Output Directory: leave empty
+- Output Directory: `dist` (also set explicitly in `vercel.json`; see below)
 - Node.js version: **24.x** (the existing project setting, which satisfies
   `engines.node >= 20.19`) or 22.x
 
@@ -58,6 +58,24 @@ over the dashboard, so `"framework": null` still builds as **Other** and the
 documented build/install commands still run. Keeping the dashboard preset at
 Other avoids confusion and makes the CLI's Express auto-detection (which would
 target `src/index.ts`) impossible.
+
+### Why `outputDirectory` is `dist`
+
+The backend has no static site; every path is handled by the `api/index.js`
+function. Vercel still runs its static build step for a project with no
+framework, and that step resolves the framework from the dependencies. Because
+Express is a dependency, the static builder falls back to Express's default
+output directory, `public`, and fails the deployment with:
+
+```text
+STATIC_BUILD_NO_OUT_DIR: No Output Directory named "public" found after the Build completed.
+```
+
+There is deliberately no `public` directory. `vercel.json` therefore sets
+`"outputDirectory": "dist"`, the directory `npm run build` already creates with
+`tsc`. The static build validates that real directory and completes. The
+all-path `routes` entry targets `/api` first, so those static files are never
+served; they exist only to satisfy the platform's build output check.
 
 `prisma generate` runs automatically through the `prebuild` script. Do not
 override the build command with a plain `tsc` call, or the Prisma Client will
