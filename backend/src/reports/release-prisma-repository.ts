@@ -109,6 +109,21 @@ const batchInclude = {
     },
     orderBy: [{ generatedAt: 'asc' }, { version: 'asc' }],
   },
+  failures: {
+    select: {
+      pupilId: true,
+      code: true,
+      message: true,
+      pupil: {
+        select: {
+          firstName: true,
+          lastName: true,
+          otherNames: true,
+        },
+      },
+    },
+    orderBy: [{ createdAt: 'asc' }],
+  },
 } satisfies Prisma.ReportGenerationBatchInclude
 
 type BatchRow = Prisma.ReportGenerationBatchGetPayload<{
@@ -205,6 +220,12 @@ async function mapBatchRow(
     releasedByName: personName(row.releasedBy),
     invoice: await invoiceForBatch(prisma, row),
     versions: row.versions.map(mapVersion),
+    failures: row.failures.map((failure) => ({
+      pupilId: failure.pupilId,
+      pupilName: failure.pupil ? fullName(failure.pupil) : null,
+      code: failure.code,
+      message: failure.message,
+    })),
   }
 }
 

@@ -87,6 +87,8 @@ export interface FixturePupil {
   teacherRemarks?: string | null
   attitude?: string | null
   photoReference?: string | null
+  /** Enrollment timestamp; defaults to before any request in the fixtures. */
+  enrolledAt?: Date
 }
 
 export const DEFAULT_SUBJECTS: FixtureSubject[] = [
@@ -242,6 +244,8 @@ export function makeReportData(
     gender: null,
     photoReference: pupil.photoReference ?? null,
     status: 'ACTIVE',
+    enrolledAt:
+      pupil.enrolledAt ?? new Date('2025-09-01T00:00:00.000Z'),
   }))
 
   const reportSubjects: ReportSubjectRecord[] = subjects.map((subject) => ({

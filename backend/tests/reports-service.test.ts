@@ -41,11 +41,29 @@ const platformReviewer: ReportActor = {
   role: 'PLATFORM_SUPER_ADMIN',
 }
 
-function setup(data = makeReportData()) {
+function setup(
+  data = makeReportData(),
+  storage: MemoryStorageAdapter = new MemoryStorageAdapter(),
+) {
   const repository = new FakeReportRepository([data])
-  const storage = new MemoryStorageAdapter()
   const service = new ReportService({ repository, storage })
   return { data, repository, storage, service }
+}
+
+class FlakyStorage extends MemoryStorageAdapter {
+  failFor: string | null = null
+
+  override async putObject(
+    key: string,
+    data: Buffer,
+    contentType: string,
+  ) {
+    if (this.failFor && key.includes(this.failFor)) {
+      throw new Error('Simulated storage outage')
+    }
+
+    return super.putObject(key, data, contentType)
+  }
 }
 
 describe('report service generation', () => {
@@ -184,7 +202,42 @@ describe('report service generation', () => {
     expect(repository.cards.size).toBe(2)
   })
 
-  it('retries only the failed pupils after the data is corrected', async () => {
+  it('retries only pupils whose generation actually failed', async () => {
+    const storage = new FlakyStorage()
+    storage.failFor = 'pupil-esi'
+    const { service, repository } = setup(makeReportData(), storage)
+
+    const first = await service.generate(
+      admin,
+      {
+        academicYearId: 'year-1',
+        academicTermId: 'term-1',
+        classId: 'class-1',
+        scope: 'CLASS',
+      },
+      audit,
+    )
+
+    expect(first.batch.status).toBe('COMPLETED_WITH_FAILURES')
+    expect(first.batch.generatedCount).toBe(2)
+    expect(first.batch.failedCount).toBe(1)
+    expect(repository.failures[0]!.code).toBe('GENERATION_FAILED')
+
+    storage.failFor = null
+
+    const retried = await service.retryBatch(admin, first.batch.id, audit)
+
+    expect(retried).toHaveLength(1)
+    expect(retried[0]!.batch.generatedCount).toBe(3)
+    expect(retried[0]!.batch.failedCount).toBe(0)
+    expect(retried[0]!.batch.status).toBe('COMPLETED')
+    expect(retried[0]!.results).toHaveLength(1)
+    expect(retried[0]!.results[0]!.pupilId).toBe('pupil-esi')
+    expect(repository.failures).toHaveLength(0)
+    expect(repository.cards.size).toBe(3)
+  })
+
+  it('refuses to retry a request blocked only by eligibility', async () => {
     const data = makeReportData()
     data.scores = data.scores.filter(
       (score) =>
@@ -203,28 +256,12 @@ describe('report service generation', () => {
       audit,
     )
 
-    data.scores.push({
-      pupilId: 'pupil-esi',
-      subjectId: 'sub-science',
-      sbaContribution: '25.00',
-      examContribution: '25.00',
-      finalScore: '50.00',
-      gradeLabel: 'D',
-      gradeRemark: 'Fair',
-      policySnapshot: data.submissions[2]!.policySnapshot,
-      gradingSnapshot: data.submissions[2]!.gradingSnapshot,
-    })
+    expect(first.batch.status).toBe('COMPLETED_WITH_FAILURES')
+    expect(repository.failures[0]!.code).toBe('RESULT_MISSING')
 
-    const retried = await service.retryBatch(admin, first.batch.id, audit)
-
-    expect(retried).toHaveLength(1)
-    expect(retried[0]!.batch.generatedCount).toBe(3)
-    expect(retried[0]!.batch.failedCount).toBe(0)
-    expect(retried[0]!.batch.status).toBe('COMPLETED')
-    expect(retried[0]!.results).toHaveLength(1)
-    expect(retried[0]!.results[0]!.pupilId).toBe('pupil-esi')
-    expect(repository.failures).toHaveLength(0)
-    expect(repository.cards.size).toBe(3)
+    await expect(
+      service.retryBatch(admin, first.batch.id, audit),
+    ).rejects.toMatchObject({ statusCode: 400 })
   })
 
   it('supports individual and term-wide generation scopes', async () => {

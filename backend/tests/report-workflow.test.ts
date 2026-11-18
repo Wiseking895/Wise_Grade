@@ -85,6 +85,42 @@ function requestService(
   return { repository, storage, service }
 }
 
+/**
+ * Simulates a pupil enrolling after a request was created. The enrollment
+ * timestamp is deliberately later than the request so snapshot reconstruction
+ * can distinguish the two pupils.
+ */
+function addLaterPupil(
+  data: ReportGenerationData,
+  pupil: {
+    id: string
+    firstName: string
+    lastName: string
+    admissionNumber: string
+  },
+) {
+  const extra = makeReportData({
+    pupils: [
+      {
+        ...pupil,
+        scores: {
+          'sub-math': '82.00',
+          'sub-english': '78.00',
+          'sub-science': '74.00',
+        },
+        daysOpened: 60,
+        daysAttended: 57,
+        enrolledAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    ],
+  })
+
+  data.pupils.push(extra.pupils[0]!)
+  data.scores.push(...extra.scores)
+  data.inputs.push(...extra.inputs)
+  data.onRoll = data.pupils.length
+}
+
 function requestDetail(overrides: Record<string, unknown> = {}) {
   return {
     id: 'batch-1',
@@ -483,7 +519,7 @@ describe('ReportService term request', () => {
     expect(repository.cards.size).toBe(3)
   })
 
-  it('skips pupils who are ineligible instead of failing the whole request', async () => {
+  it('records a clear reason for an ineligible pupil instead of silently dropping them', async () => {
     const data = makeReportData()
     data.scores = data.scores.filter(
       (score) =>
@@ -502,12 +538,238 @@ describe('ReportService term request', () => {
       audit,
     )
 
-    expect(generated.batch.status).toBe('COMPLETED')
+    expect(generated.batch.status).toBe('COMPLETED_WITH_FAILURES')
+    expect(generated.batch.requestedPupilCount).toBe(3)
     expect(generated.batch.generatedCount).toBe(2)
-    expect(generated.batch.failedCount).toBe(0)
-    expect(generated.results).toHaveLength(2)
-    expect(repository.failures).toHaveLength(0)
+    expect(generated.batch.failedCount).toBe(1)
+    expect(generated.results).toHaveLength(3)
+
+    const ineligible = generated.results.find(
+      (item) => item.pupilId === 'pupil-esi',
+    )
+    expect(ineligible).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'RESULT_MISSING',
+    })
+    expect(ineligible?.failureMessage).toBeTruthy()
+
+    expect(repository.failures).toHaveLength(1)
+    expect(repository.failures[0]).toMatchObject({
+      pupilId: 'pupil-esi',
+      code: 'RESULT_MISSING',
+    })
     expect(repository.cards.size).toBe(2)
+    expect(
+      generated.batch.generatedCount +
+        generated.batch.skippedCount +
+        generated.batch.failedCount,
+    ).toBe(generated.batch.requestedPupilCount)
+  })
+
+  it('refreshes eligibility only for the original pupil of a historical one-pupil request', async () => {
+    const data = makeReportData({
+      pupils: [
+        {
+          id: 'pupil-historic',
+          firstName: 'Kwame',
+          lastName: 'Appiah',
+          admissionNumber: 'BW/2026/0075',
+          scores: {
+            'sub-math': '80.00',
+            'sub-english': '75.00',
+            'sub-science': '70.00',
+          },
+          daysOpened: 60,
+          daysAttended: 57,
+        },
+      ],
+    })
+    const { service, repository } = requestService([data])
+
+    const request = await service.createRequest(
+      admin,
+      { academicYearId: 'year-1', academicTermId: 'term-1' },
+      audit,
+    )
+    expect(request.batch.requestedPupilCount).toBe(1)
+
+    // Attendance was cleared after the request existed, which is what produced
+    // the historical ATTENDANCE_MISSING failure for this request.
+    const historicInput = data.inputs.find(
+      (item) => item.pupilId === 'pupil-historic',
+    )!
+    historicInput.daysOpened = null
+    historicInput.daysAttended = null
+
+    const blocked = await service.generateIntoBatch(
+      admin,
+      request.batch.id,
+      audit,
+    )
+    expect(blocked.batch.status).toBe('FAILED')
+    expect(blocked.batch.requestedPupilCount).toBe(1)
+    expect(blocked.batch.failedCount).toBe(1)
+    expect(repository.failures[0]).toMatchObject({
+      pupilId: 'pupil-historic',
+      code: 'ATTENDANCE_MISSING',
+    })
+
+    // The second pupil enrolls only after the request was created. They must
+    // not be added to the historical request.
+    addLaterPupil(data, {
+      id: 'pupil-late',
+      firstName: 'Dominic',
+      lastName: 'Yeboah',
+      admissionNumber: 'BW/2026/00754',
+    })
+
+    // Correcting the original pupil's attendance refreshes eligibility for
+    // exactly that pupil.
+    const input = data.inputs.find(
+      (item) => item.pupilId === 'pupil-historic',
+    )!
+    input.daysOpened = 60
+    input.daysAttended = 57
+
+    const refreshed = await service.generateIntoBatch(
+      admin,
+      request.batch.id,
+      audit,
+    )
+
+    expect(refreshed.batch.status).toBe('COMPLETED')
+    expect(refreshed.batch.requestedPupilCount).toBe(1)
+    expect(refreshed.batch.generatedCount).toBe(1)
+    expect(refreshed.batch.failedCount).toBe(0)
+    expect(refreshed.results.map((item) => item.pupilId)).toEqual([
+      'pupil-historic',
+    ])
+    expect(
+      [...repository.cards.values()].map((card) => card.pupilId),
+    ).toEqual(['pupil-historic'])
+    expect(repository.failures).toHaveLength(0)
+  })
+
+  it('uses the creation-time enrollment snapshot when an aborted request has no per-pupil rows', async () => {
+    const data = makeReportData({
+      pupils: [
+        {
+          id: 'pupil-original',
+          firstName: 'Original',
+          lastName: 'Pupil',
+          admissionNumber: 'BW/2026/0075',
+          scores: {
+            'sub-math': '80.00',
+            'sub-english': '75.00',
+            'sub-science': '70.00',
+          },
+        },
+      ],
+    })
+    const { service, repository } = requestService([data])
+    const request = await service.createRequest(
+      admin,
+      { academicYearId: 'year-1', academicTermId: 'term-1' },
+      audit,
+    )
+
+    await service.failBatch(
+      admin,
+      request.batch.id,
+      'Private storage is unavailable.',
+    )
+
+    addLaterPupil(data, {
+      id: 'pupil-after-abort',
+      firstName: 'Later',
+      lastName: 'Pupil',
+      admissionNumber: 'BW/2026/00754',
+    })
+
+    const generated = await service.generateIntoBatch(
+      admin,
+      request.batch.id,
+      audit,
+    )
+
+    expect(generated.batch.status).toBe('COMPLETED')
+    expect(generated.batch.requestedPupilCount).toBe(1)
+    expect(generated.batch.generatedCount).toBe(1)
+    expect(generated.results.map((item) => item.pupilId)).toEqual([
+      'pupil-original',
+    ])
+    expect(
+      [...repository.cards.values()].map((card) => card.pupilId),
+    ).toEqual(['pupil-original'])
+  })
+
+  it('generates both pupils of a new two-pupil request exactly once', async () => {
+    const data = makeReportData({
+      pupils: [
+        {
+          id: 'pupil-a',
+          firstName: 'Ama',
+          lastName: 'Mensah',
+          admissionNumber: 'BW/2026/0075',
+          scores: {
+            'sub-math': '90.00',
+            'sub-english': '85.00',
+            'sub-science': '80.00',
+          },
+        },
+        {
+          id: 'pupil-b',
+          firstName: 'Kofi',
+          lastName: 'Owusu',
+          admissionNumber: 'BW/2026/00754',
+          scores: {
+            'sub-math': '75.00',
+            'sub-english': '70.00',
+            'sub-science': '65.00',
+          },
+        },
+      ],
+    })
+    const { service, repository } = requestService([data])
+
+    const request = await service.createRequest(
+      admin,
+      { academicYearId: 'year-1', academicTermId: 'term-1' },
+      audit,
+    )
+    expect(request.batch.requestedPupilCount).toBe(2)
+
+    const generated = await service.generateIntoBatch(
+      admin,
+      request.batch.id,
+      audit,
+    )
+
+    expect(generated.batch).toMatchObject({
+      status: 'COMPLETED',
+      requestedPupilCount: 2,
+      generatedCount: 2,
+      skippedCount: 0,
+      failedCount: 0,
+    })
+    expect(generated.results).toHaveLength(2)
+    expect(
+      generated.batch.generatedCount +
+        generated.batch.skippedCount +
+        generated.batch.failedCount,
+    ).toBe(generated.batch.requestedPupilCount)
+    expect(
+      [...repository.cards.values()]
+        .map((card) => card.pupilId)
+        .sort(),
+    ).toEqual(['pupil-a', 'pupil-b'])
+    expect(repository.versions.size).toBe(2)
+
+    // A second Generate must not create duplicate versions.
+    await expect(
+      service.generateIntoBatch(admin, request.batch.id, audit),
+    ).rejects.toMatchObject({ statusCode: 409 })
+    expect(repository.versions.size).toBe(2)
   })
 
   it('marks a request FAILED when generation aborts so retry is possible', async () => {
@@ -567,6 +829,107 @@ describe('ReportReleaseService request approval', () => {
       expected: ['PENDING_PLATFORM_REVIEW'],
       next: 'APPROVED',
       requireEligible: false,
+    })
+  })
+
+  it('approves a failed legacy request so Generate can re-evaluate eligibility', async () => {
+    const context = setup()
+    const seed = await buildReleaseSeed(context.storage, {
+      releaseStatus: 'PENDING_PLATFORM_REVIEW',
+      batchStatus: 'FAILED',
+      generatedCount: 0,
+      failedCount: 1,
+      includeInvoice: false,
+      failures: [
+        {
+          pupilId: 'pupil-kwame',
+          pupilName: 'Kwame Appiah',
+          code: 'ATTENDANCE_MISSING',
+          message:
+            'School days opened and days attended are required before generation.',
+        },
+      ],
+    })
+    // A failed request produced no report versions.
+    seed.record.versions = []
+    context.repository.seed(seed)
+
+    const approved = await context.service.approveRequest(
+      platformActor,
+      seed.record.batch.id,
+      releaseAudit,
+    )
+
+    expect(approved.releaseStatus).toBe('APPROVED')
+    expect(approved.generationStatus).toBe('FAILED')
+    expect(approved.eligibility).toEqual({ eligible: true, issues: [] })
+    expect(approved.failures).toEqual([
+      {
+        pupilId: 'pupil-kwame',
+        pupilName: 'Kwame Appiah',
+        code: 'ATTENDANCE_MISSING',
+        message:
+          'School days opened and days attended are required before generation.',
+      },
+    ])
+    expect(context.repository.transitions.at(-1)).toMatchObject({
+      action: 'REPORT_RELEASE_APPROVED',
+      expected: ['PENDING_PLATFORM_REVIEW'],
+      next: 'APPROVED',
+      requireEligible: false,
+    })
+  })
+
+  it('distinguishes eligibility blockers from retryable generation failures', async () => {
+    const context = setup()
+    const blocking = await buildReleaseSeed(context.storage, {
+      releaseStatus: 'APPROVED',
+      batchStatus: 'COMPLETED_WITH_FAILURES',
+      generatedCount: 1,
+      failedCount: 1,
+      failures: [
+        {
+          pupilId: 'pupil-ineligible',
+          pupilName: 'Ineligible Pupil',
+          code: 'RESULT_NOT_ACCEPTED',
+          message: 'Creative Art results have not been accepted.',
+        },
+      ],
+    })
+    const retryable = await buildReleaseSeed(context.storage, {
+      releaseStatus: 'APPROVED',
+      batchStatus: 'COMPLETED_WITH_FAILURES',
+      generatedCount: 1,
+      failedCount: 1,
+      failures: [
+        {
+          pupilId: 'pupil-storage',
+          pupilName: 'Storage Pupil',
+          code: 'GENERATION_FAILED',
+          message: 'Private storage is unavailable.',
+        },
+      ],
+    })
+    context.repository.seed(blocking)
+    context.repository.seed(retryable)
+
+    const summaries = await context.service.listPlatformBatches({})
+    const blockingSummary = summaries.find(
+      (item) => item.id === blocking.record.batch.id,
+    )!
+    const retryableSummary = summaries.find(
+      (item) => item.id === retryable.record.batch.id,
+    )!
+
+    expect(blockingSummary).toMatchObject({
+      failedCount: 1,
+      failureCodes: ['RESULT_NOT_ACCEPTED'],
+      retryableFailureCount: 0,
+    })
+    expect(retryableSummary).toMatchObject({
+      failedCount: 1,
+      failureCodes: ['GENERATION_FAILED'],
+      retryableFailureCount: 1,
     })
   })
 

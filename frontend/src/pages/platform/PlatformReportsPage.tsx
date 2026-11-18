@@ -102,6 +102,44 @@ function academicReviewTone(
   return 'success'
 }
 
+/**
+ * Retry is reserved for infrastructure failures (PDF rendering, private
+ * storage or persistence). Eligibility failures are resolved by correcting
+ * records and using Generate Reports, which re-evaluates the live data.
+ */
+function isRetryable(
+  batch: Pick<
+    ReportReleaseBatchSummary,
+    'retryableFailureCount' | 'fatalError' | 'generationStatus'
+  >,
+): boolean {
+  return (
+    batch.retryableFailureCount > 0 ||
+    (batch.generationStatus === 'FAILED' && Boolean(batch.fatalError))
+  )
+}
+
+/**
+ * Some failures are eligibility blocks, not infrastructure faults. They can
+ * only be resolved by correcting records and re-running Generate, so Generate
+ * must stay available even when the same batch also has retryable failures.
+ */
+function needsEligibilityCorrection(
+  batch: ReportReleaseBatchSummary,
+): boolean {
+  return !batch.fatalError && batch.failedCount > batch.retryableFailureCount
+}
+
+function canGenerateBatch(batch: ReportReleaseBatchSummary): boolean {
+  return (
+    batch.releaseStatus !== 'RELEASED' &&
+    batch.releaseStatus !== 'ON_HOLD' &&
+    batch.releaseStatus !== 'RETURNED' &&
+    batch.generationStatus !== 'RUNNING' &&
+    !(batch.generationStatus === 'COMPLETED' && batch.reportCount > 0)
+  )
+}
+
 function StatCard({
   label,
   value,
@@ -351,9 +389,17 @@ export default function PlatformReportsPage() {
             ? `Generated ${outcome.batch.reportCount} report${
                 outcome.batch.reportCount === 1 ? '' : 's'
               } for ${outcome.batch.schoolName}. The school can view them now.`
-            : `Generated ${outcome.batch.generatedCount} of ${outcome.batch.requestedPupilCount} reports for ${outcome.batch.schoolName}. ${
-                outcome.batch.failedCount
-              } need a retry.`,
+            : `Generated ${outcome.batch.generatedCount} of ${
+                outcome.batch.requestedPupilCount
+              } reports for ${outcome.batch.schoolName}. ${
+                outcome.batch.failedCount >
+                outcome.batch.retryableFailureCount
+                  ? `${
+                      outcome.batch.failedCount -
+                      outcome.batch.retryableFailureCount
+                    } pupil(s) are not yet eligible. Correct the records shown in the request detail and generate again.`
+                  : `${outcome.batch.failedCount} failed during rendering or storage and can be retried.`
+              }`,
         )
       } else {
         const outcome = await retryPlatformReportBatch(detail.id, token)
@@ -381,15 +427,13 @@ export default function PlatformReportsPage() {
 
   const selectedBatch =
     batches.find((batch) => batch.id === selectedBatchId) ?? null
-  const canGenerate =
-    detail?.releaseStatus === 'APPROVED' &&
-    detail.generationStatus !== 'RUNNING' &&
-    detail.generationStatus !== 'COMPLETED'
-  const canRetry =
-    detail?.releaseStatus === 'APPROVED' &&
-    (detail.failedCount > 0 ||
-      detail.generationStatus === 'COMPLETED_WITH_FAILURES' ||
-      detail.generationStatus === 'FAILED')
+  const canGenerate = detail ? canGenerateBatch(detail) : false
+  const canRetry = detail
+    ? detail.releaseStatus === 'APPROVED' &&
+      detail.generationStatus !== 'RUNNING' &&
+      isRetryable(detail) &&
+      !needsEligibilityCorrection(detail)
+    : false
 
   function rowAction(batch: ReportReleaseBatchSummary) {
     if (batch.generationStatus === 'RUNNING') {
@@ -415,8 +459,9 @@ export default function PlatformReportsPage() {
     }
 
     if (
-      batch.generationStatus === 'COMPLETED_WITH_FAILURES' ||
-      batch.generationStatus === 'FAILED'
+      batch.releaseStatus === 'APPROVED' &&
+      isRetryable(batch) &&
+      !needsEligibilityCorrection(batch)
     ) {
       return (
         <button
@@ -430,7 +475,7 @@ export default function PlatformReportsPage() {
       )
     }
 
-    if (batch.releaseStatus === 'APPROVED') {
+    if (canGenerateBatch(batch)) {
       return (
         <button
           type="button"
@@ -797,16 +842,43 @@ export default function PlatformReportsPage() {
           ) : detail.failedCount > 0 ||
             detail.generationStatus === 'COMPLETED_WITH_FAILURES' ||
             detail.generationStatus === 'FAILED' ? (
-            <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-[#7a5400]">
-              <TriangleAlert aria-hidden="true" className="size-4" />
-              {detail.generatedCount} of {detail.requestedPupilCount} reports
-              generated. Only the failed pupils can be retried; successful
-              reports are never duplicated.
-            </p>
+            <div className="mt-4 space-y-2">
+              <p className="flex items-center gap-2 text-sm font-semibold text-[#7a5400]">
+                <TriangleAlert aria-hidden="true" className="size-4" />
+                {detail.generatedCount} of {detail.requestedPupilCount} reports
+                generated.{' '}
+                {needsEligibilityCorrection(detail)
+                  ? 'The remaining pupils are not yet eligible. Correct the academic or attendance records listed below, then use Generate Reports so eligibility is re-evaluated.'
+                  : 'Retry regenerates only the pupils whose PDF rendering or storage failed; successful reports are never duplicated.'}
+              </p>
+              {detail.failures.length > 0 ? (
+                <ul className="space-y-1 rounded-lg bg-gradely-gold/10 px-3 py-2 text-xs text-[#7a5400]">
+                  {detail.failures.map((failure, index) => (
+                    <li
+                      key={`${failure.pupilId ?? 'batch'}-${
+                        failure.code
+                      }-${index}`}
+                    >
+                      <span className="font-semibold">
+                        {failure.pupilName ?? 'Batch'}:
+                      </span>{' '}
+                      {failure.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           ) : detail.releaseStatus === 'APPROVED' ? (
             <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-gradely-navy">
               <FileText aria-hidden="true" className="size-4" />
               Accepted by the school administrator and ready for generation.
+            </p>
+          ) : detail.releaseStatus === 'PENDING_PLATFORM_REVIEW' ? (
+            <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-gradely-navy">
+              <FileText aria-hidden="true" className="size-4" />
+              Accepted by the school administrator. Generate Reports normalises
+              this legacy request automatically; no second academic review is
+              required.
             </p>
           ) : null}
 

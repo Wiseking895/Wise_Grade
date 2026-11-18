@@ -286,6 +286,9 @@ export interface ReportReleaseBatchSummary {
   skippedCount: number
   failedCount: number
   reportCount: number
+  fatalError: string | null
+  failureCodes: string[]
+  retryableFailureCount: number
   releaseStatus: ReportReleaseStatus
   previousReleaseStatus: ReportReleaseStatus | null
   submittedAt: string | null
@@ -315,8 +318,16 @@ export interface ReportReleaseVersionSummary {
   releaseStatus: ReportReleaseStatus
 }
 
+export interface ReportReleaseFailureSummary {
+  pupilId: string | null
+  pupilName: string | null
+  code: string
+  message: string
+}
+
 export interface ReportReleaseBatchDetail extends ReportReleaseBatchSummary {
   versions: ReportReleaseVersionSummary[]
+  failures: ReportReleaseFailureSummary[]
 }
 
 export interface ReportRequestDetail extends ReportReleaseBatchDetail {

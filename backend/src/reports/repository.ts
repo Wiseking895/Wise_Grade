@@ -218,6 +218,13 @@ export interface ReportPupilRecord {
   gender: string | null
   photoReference: string | null
   status: string
+  /**
+   * When the pupil joined this class for the academic year. Used to reconstruct
+   * the pupil snapshot of a historical request: a pupil enrolled after the
+   * request was created was never part of that request and must not be added
+   * to it retrospectively.
+   */
+  enrolledAt?: Date | null
 }
 
 export interface ReportSubjectRecord {

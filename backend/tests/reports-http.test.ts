@@ -423,13 +423,16 @@ describe('report HTTP routes', () => {
   })
 
   it('lists generation failures and retries them over HTTP', async () => {
-    data.scores = data.scores.filter(
-      (score) =>
-        !(
-          score.pupilId === ids.pupilIds['pupil-esi'] &&
-          score.subjectId === ids.subjectIds['sub-science']
-        ),
-    )
+    const failingPupilId = ids.pupilIds['pupil-esi']!
+    const originalPut = storage.putObject.bind(storage)
+
+    storage.putObject = async (key, payload, contentType) => {
+      if (key.includes(failingPupilId)) {
+        throw new Error('Simulated storage outage')
+      }
+
+      return originalPut(key, payload, contentType)
+    }
 
     const first = await generateReports()
 
@@ -438,18 +441,9 @@ describe('report HTTP routes', () => {
     const batchId = first.batch.id
     const detail = await service.getBatch(reportActor(), batchId)
     expect(detail.failures).toHaveLength(1)
+    expect(detail.failures[0]!.code).toBe('GENERATION_FAILED')
 
-    data.scores.push({
-      pupilId: ids.pupilIds['pupil-esi']!,
-      subjectId: ids.subjectIds['sub-science']!,
-      sbaContribution: '25.00',
-      examContribution: '25.00',
-      finalScore: '50.00',
-      gradeLabel: 'D',
-      gradeRemark: 'Fair',
-      policySnapshot: data.submissions[2]!.policySnapshot,
-      gradingSnapshot: data.submissions[2]!.gradingSnapshot,
-    })
+    storage.putObject = originalPut
 
     const retried = await service.retryBatch(reportActor(), batchId, {
       actorUserId: 'admin-a-user',

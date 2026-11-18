@@ -941,6 +941,7 @@ export function createPrismaReportRepository(): ReportRepository {
           gender: enrollment.pupil.gender,
           photoReference: enrollment.pupil.photoReference,
           status: enrollment.pupil.status,
+          enrolledAt: enrollment.createdAt,
         })),
         inputs: inputs.map(mapInput),
         submissions: submissions.map((submission) => ({

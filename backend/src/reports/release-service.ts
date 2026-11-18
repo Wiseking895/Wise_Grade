@@ -31,6 +31,14 @@ export interface ReportReleaseBatchSummary {
   skippedCount: number
   failedCount: number
   reportCount: number
+  fatalError: string | null
+  /**
+   * Distinct failure reasons recorded for this batch. Eligibility codes such as
+   * RESULT_NOT_ACCEPTED or ATTENDANCE_MISSING are resolved by correcting records
+   * and using Generate; GENERATION_FAILED is the only retryable code.
+   */
+  failureCodes: string[]
+  retryableFailureCount: number
   releaseStatus: ReportReleaseStatus
   previousReleaseStatus: ReportReleaseStatus | null
   submittedAt: Date | null
@@ -68,8 +76,16 @@ export interface ReportReleaseVersionSummary {
   releaseStatus: ReportReleaseStatus
 }
 
+export interface ReportReleaseFailureSummary {
+  pupilId: string | null
+  pupilName: string | null
+  code: string
+  message: string
+}
+
 export interface ReportReleaseBatchDetail extends ReportReleaseBatchSummary {
   versions: ReportReleaseVersionSummary[]
+  failures: ReportReleaseFailureSummary[]
 }
 
 export interface PlatformReportPreview {
@@ -384,9 +400,16 @@ export class ReportReleaseService {
       )
     }
 
-    // A legacy generated batch queued for review still needs the full report
-    // eligibility check before it can be approved.
-    if (record.batch.status !== 'PENDING') {
+    // A fully generated batch queued for review still needs the full report
+    // eligibility check before it can be approved. A failed or partially
+    // generated request must be allowed to become APPROVED so Generate Reports
+    // can re-evaluate its pupils; release still requires a completed batch.
+    if (
+      record.batch.status === 'COMPLETED' &&
+      record.batch.failedCount === 0 &&
+      record.batch.skippedCount === 0 &&
+      record.versions.length > 0
+    ) {
       return this.approve(actor, batchId, audit)
     }
 
@@ -902,6 +925,13 @@ export class ReportReleaseService {
     eligibility: ReportReleaseEligibility,
   ): ReportReleaseBatchSummary {
     const batch = record.batch
+    const failureCodes = [...new Set(record.failures.map((failure) => failure.code))]
+    // Only a rendering, storage or persistence error is safe to retry. An
+    // eligibility failure is resolved by correcting records and regenerating.
+    const retryableFailureCount = record.failures.filter(
+      (failure) =>
+        failure.code === 'GENERATION_FAILED' && failure.pupilId !== null,
+    ).length
 
     return {
       id: batch.id,
@@ -920,6 +950,9 @@ export class ReportReleaseService {
       skippedCount: batch.skippedCount,
       failedCount: batch.failedCount,
       reportCount: record.versions.length,
+      fatalError: batch.fatalError,
+      failureCodes,
+      retryableFailureCount,
       releaseStatus: batch.releaseStatus,
       previousReleaseStatus: batch.previousReleaseStatus,
       submittedAt: batch.submittedAt,
@@ -964,6 +997,12 @@ export class ReportReleaseService {
         version: version.version,
         generatedAt: version.generatedAt,
         releaseStatus: record.batch.releaseStatus,
+      })),
+      failures: record.failures.map((failure) => ({
+        pupilId: failure.pupilId,
+        pupilName: failure.pupilName,
+        code: failure.code,
+        message: failure.message,
       })),
     }
   }

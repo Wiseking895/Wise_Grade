@@ -43,6 +43,7 @@ export interface FakeReleaseSeedOptions {
   failedCount?: number
   skippedCount?: number
   generatedCount?: number
+  failures?: ReportReleaseBatchRecord['failures']
 }
 
 export interface FakeReleaseSeed {
@@ -168,6 +169,7 @@ export async function buildReleaseSeed(
               options.includeReportInInvoice === false ? [] : [reportCardId],
           },
     versions: [version],
+    failures: options.failures ?? [],
   }
 
   return { record, versionId, storageKey, data }
@@ -202,6 +204,7 @@ export class FakeReportReleaseRepository implements ReportReleaseRepository {
       ...record,
       batch: { ...record.batch },
       versions: record.versions.map((version) => ({ ...version })),
+      failures: record.failures.map((failure) => ({ ...failure })),
     }
   }
 

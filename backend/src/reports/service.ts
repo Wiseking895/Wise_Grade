@@ -790,6 +790,15 @@ export class ReportService {
       )
     }
 
+    // The request snapshot is the current on-roll population for the term, not
+    // only the currently eligible subset. Ineligible pupils stay in the
+    // snapshot and are recorded with a clear reason during generation, so the
+    // request counters always reconcile with the pupils it covered.
+    const requestedPupilCount = classes.reduce(
+      (total, item) => total + item.pupilCount,
+      0,
+    )
+
     const batch = await this.repository.createRequestBatch(
       actor,
       {
@@ -797,7 +806,7 @@ export class ReportService {
         academicTermId: input.academicTermId,
         classId: null,
         scope: 'TERM',
-        requestedPupilCount: eligiblePupilCount,
+        requestedPupilCount,
         status: 'PENDING',
         releaseStatus: 'APPROVED',
         submittedAt: new Date(),
@@ -1039,21 +1048,22 @@ export class ReportService {
 
       const failedPupils = new Set(
         batch.failures
+          .filter((failure) => failure.code === 'GENERATION_FAILED')
           .map((failure) => failure.pupilId)
           .filter((pupilId): pupilId is string => Boolean(pupilId)),
       )
 
       if (failedPupils.size === 0) {
-        if (batch.status !== 'FAILED') {
+        if (batch.status !== 'FAILED' || !batch.fatalError) {
           throw new HttpError(
             400,
-            'This request has no per-pupil failures that can be retried.',
+            'This request has no generation failures to retry. Correct the records and use Generate Reports to re-evaluate eligibility.',
           )
         }
 
         // A fatal generation error may occur before any pupil is processed.
         // The batch is marked FAILED, so retry safely falls through to a full
-        // rerun of the eligible pupils instead of remaining stuck.
+        // rerun of the original pupils instead of remaining stuck.
       } else {
         const classIds = [
           ...new Set(batch.failures.map((failure) => failure.classId)),
@@ -1121,25 +1131,32 @@ export class ReportService {
 
     this.assertSchoolIdentityComplete(datasets[0]!.school)
 
-    // Generate only the pupils who are eligible and have not already produced a
-    // version. A retry after a fatal error has no per-pupil failure rows, so the
-    // existing versions are the authoritative record of completed work.
+    // Preserve the request's original pupil snapshot. Successful versions and
+    // failure rows are authoritative; when a run aborted before recording any
+    // per-pupil row, the pupils already enrolled when the request was created
+    // are the snapshot. A later enrollment is never added to an old request.
+    //
+    // Every original pupil is processed, including ineligible ones, so a stale
+    // eligibility failure is always replaced with the reason from the latest
+    // academic and attendance records. Eligible pupils are generated exactly
+    // once because pupils with an existing version are excluded.
+    const allBuilds = datasets.flatMap((data) =>
+      buildReportSet(data).builds.map((build) => ({ data, build })),
+    )
+    const originalPupilIds = this.requestPupilSnapshot(batch, allBuilds)
     const generatedPupilIds = new Set(
       batch.versions.map((version) => version.pupilId),
     )
-    const targets = datasets
-      .flatMap((data) =>
-        buildReportSet(data).builds.map((build) => ({ data, build })),
-      )
-      .filter(
-        (item) =>
-          item.build.eligible && !generatedPupilIds.has(item.build.pupil.id),
-      )
+    const targets = allBuilds.filter(
+      (item) =>
+        originalPupilIds.has(item.build.pupil.id) &&
+        !generatedPupilIds.has(item.build.pupil.id),
+    )
 
     if (targets.length === 0) {
       throw new HttpError(
         400,
-        'There are no eligible pupils to generate reports for in this request. Complete academic review and acceptance first.',
+        'There are no pupils remaining to generate reports for in this request. Complete academic review and acceptance first.',
       )
     }
 
@@ -1173,6 +1190,52 @@ export class ReportService {
       requestedPupilCount:
         previousGenerated + previousSkipped + previousFailed + targets.length,
     })
+  }
+
+  /**
+   * Reconstructs the pupils that belonged to a request when it was created.
+   *
+   * Generated versions and failure rows are the most precise record: they name
+   * exactly the pupils the request attempted. When an abort happened before any
+   * per-pupil row was written, enrollment timestamps reconstruct the snapshot.
+   * The returned set is never widened by a later enrollment.
+   */
+  private requestPupilSnapshot(
+    batch: ReportBatchDetail,
+    builds: Array<{
+      build: ReturnType<typeof buildReportSet>['builds'][number]
+    }>,
+  ): Set<string> {
+    const recorded = new Set<string>()
+
+    for (const version of batch.versions) {
+      recorded.add(version.pupilId)
+    }
+
+    for (const failure of batch.failures) {
+      if (failure.pupilId) {
+        recorded.add(failure.pupilId)
+      }
+    }
+
+    if (recorded.size > 0) {
+      return recorded
+    }
+
+    const atCreation = new Set<string>()
+
+    for (const { build } of builds) {
+      const enrolledAt = build.pupil.enrolledAt
+
+      if (
+        !enrolledAt ||
+        enrolledAt.getTime() <= batch.createdAt.getTime()
+      ) {
+        atCreation.add(build.pupil.id)
+      }
+    }
+
+    return atCreation
   }
 
   private async runIntoBatch(
@@ -1700,10 +1763,14 @@ export class ReportService {
   ): Promise<GenerateReportsResult[]> {
     const batch = await this.getBatch(actor, batchId)
 
-    if (batch.failures.length === 0) {
+    const retryable = batch.failures.filter(
+      (failure) => failure.code === 'GENERATION_FAILED',
+    )
+
+    if (retryable.length === 0) {
       throw new HttpError(
         400,
-        'This batch has no per-pupil failures that can be retried',
+        'This batch has no generation failures to retry. Use Generate Reports to re-evaluate eligibility after correcting records.',
       )
     }
 

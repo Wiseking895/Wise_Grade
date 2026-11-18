@@ -63,6 +63,13 @@ export interface ReportReleaseVersionRecord {
   snapshot: unknown
 }
 
+export interface ReportReleaseFailureRecord {
+  pupilId: string | null
+  pupilName: string | null
+  code: string
+  message: string
+}
+
 /**
  * A batch plus the denormalized context needed to evaluate release eligibility.
  * Storage object keys never leave the backend response layer.
@@ -84,6 +91,7 @@ export interface ReportReleaseBatchRecord {
   releasedByName: string | null
   invoice: ReportReleaseInvoiceRecord | null
   versions: ReportReleaseVersionRecord[]
+  failures: ReportReleaseFailureRecord[]
 }
 
 export interface ReportReleaseBatchFilter {
