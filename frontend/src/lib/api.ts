@@ -26,6 +26,42 @@ export function apiAssetUrl(path: string): string {
   return path.startsWith('http') ? path : `${API_BASE_URL}${path}`
 }
 
+const SUBJECT_SESSION_HINT_KEY = 'gradely.subjectSessionHint'
+
+/**
+ * The restricted subject-session cookie is HttpOnly and belongs to the API
+ * origin, which is a different host from the web app in production. Browser
+ * JavaScript can therefore never inspect it. Instead the client records a
+ * non-secret marker in its own origin's storage after a successful access-code
+ * entry, so `loadAuthState` only pays for the `/subject-teacher/me` probe when a
+ * subject session can plausibly exist.
+ */
+export function rememberSubjectSessionHint(): void {
+  try {
+    window.localStorage.setItem(SUBJECT_SESSION_HINT_KEY, '1')
+  } catch {
+    // A browser with storage disabled simply falls back to no probe.
+  }
+}
+
+/** True when this browser entered a subject access code on this origin. */
+export function hasSubjectSessionHint(): boolean {
+  try {
+    return window.localStorage.getItem(SUBJECT_SESSION_HINT_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/** Clears a stale marker after the restricted session endpoint rejects us. */
+export function clearSubjectSessionHint(): void {
+  try {
+    window.localStorage.removeItem(SUBJECT_SESSION_HINT_KEY)
+  } catch {
+    // Nothing to clear when storage is unavailable.
+  }
+}
+
 export interface ApiFieldError {
   field: string
   message: string

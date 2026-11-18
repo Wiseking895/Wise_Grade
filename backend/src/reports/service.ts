@@ -758,26 +758,6 @@ export class ReportService {
       )
     }
 
-    const existing = (
-      await this.repository.listBatches(actor, {
-        academicTermId: input.academicTermId,
-        classIds: null,
-      })
-    ).find(
-      (batch) =>
-        batch.scope === 'TERM' &&
-        (batch.releaseStatus === 'PENDING_PLATFORM_REVIEW' ||
-          batch.releaseStatus === 'APPROVED'),
-    )
-
-    if (existing) {
-      throw new HttpError(
-        409,
-        'A report-generation request for this term is already awaiting platform generation.',
-        { batchId: existing.id },
-      )
-    }
-
     const classes = await this.buildClassSummaries(
       actor,
       input.academicYearId,
@@ -810,7 +790,7 @@ export class ReportService {
       )
     }
 
-    const batch = await this.repository.createBatch(
+    const batch = await this.repository.createRequestBatch(
       actor,
       {
         academicYearId: input.academicYearId,
@@ -831,66 +811,199 @@ export class ReportService {
   }
 
   /**
-   * Returns a request batch with the current class list. Classes that already
-   * produced versions or failures are annotated with those counts; a request
-   * that has not run yet uses the live accepted-result preflight.
+   * Returns a request batch with its class breakdown.
+   *
+   * Once a batch has started, its class rows are derived from the batch's own
+   * versions and failures. Recomputing them from the live roster made a later
+   * enrollment appear inside an earlier request (for example Requested 1 but
+   * Pupils 2 / Ineligible 2). A request that has not started yet still shows the
+   * live accepted-result preflight, because that is the snapshot generation
+   * will consume.
    */
   async getRequest(
     actor: ReportActor,
     batchId: string,
   ): Promise<{ batch: ReportBatchDetail; classes: ReportRequestClassSummary[] }> {
     const batch = await this.getBatch(actor, batchId)
-    const live = await this.buildClassSummaries(
-      actor,
-      batch.academicYearId,
-      batch.academicTermId,
-    )
 
-    const generatedByClass = new Map<string, number>()
-    const failedByClass = new Map<string, number>()
+    if (
+      batch.status === 'PENDING' &&
+      batch.versions.length === 0 &&
+      batch.failures.length === 0
+    ) {
+      return {
+        batch,
+        classes: await this.buildClassSummaries(
+          actor,
+          batch.academicYearId,
+          batch.academicTermId,
+        ),
+      }
+    }
+
+    return { batch, classes: await this.batchClassSummaries(actor, batch) }
+  }
+
+  private async batchClassSummaries(
+    actor: ReportActor,
+    batch: ReportBatchDetail,
+  ): Promise<ReportRequestClassSummary[]> {
+    const classNames = new Map<string, string>()
+
+    try {
+      const classes = await this.repository.listClassesForTerm(
+        actor,
+        batch.academicYearId,
+        batch.academicTermId,
+      )
+
+      for (const item of classes) {
+        classNames.set(item.id, item.name)
+      }
+    } catch {
+      // Class names are cosmetic. A batch must remain viewable even when its
+      // class has since been archived.
+    }
+
+    if (batch.classId && batch.className) {
+      classNames.set(batch.classId, batch.className)
+    }
+
+    const generated = new Map<string, Set<string>>()
+    const failed = new Map<string, Set<string>>()
+    const acceptedResults = new Map<string, number>()
+
+    const addPupil = (
+      target: Map<string, Set<string>>,
+      classId: string,
+      pupilId: string,
+    ) => {
+      const pupils = target.get(classId) ?? new Set<string>()
+      pupils.add(pupilId)
+      target.set(classId, pupils)
+    }
 
     for (const version of batch.versions) {
-      generatedByClass.set(
+      addPupil(generated, version.classId, version.pupilId)
+      // Accepted results come from the immutable snapshot captured when the
+      // report was generated, so a later academic edit cannot rewrite history.
+      acceptedResults.set(
         version.classId,
-        (generatedByClass.get(version.classId) ?? 0) + 1,
+        (acceptedResults.get(version.classId) ?? 0) +
+          version.acceptedResultCount,
       )
     }
 
     for (const failure of batch.failures) {
-      if (!failure.pupilId) {
+      if (failure.pupilId) {
+        addPupil(failed, failure.classId, failure.pupilId)
+      }
+    }
+
+    const classIds = new Set<string>([
+      ...generated.keys(),
+      ...failed.keys(),
+    ])
+
+    if (batch.classId) {
+      classIds.add(batch.classId)
+    }
+
+    // A fatal error can leave pupils unprocessed without a failure row. The
+    // batch counters still include them, so attribute the remainder to the
+    // class row instead of silently dropping pupils from the breakdown.
+    let attributedFailures = 0
+
+    for (const pupils of failed.values()) {
+      attributedFailures += pupils.size
+    }
+
+    let unattributedFailures = Math.max(
+      0,
+      batch.failedCount - attributedFailures,
+    )
+    const fallbackClassId =
+      batch.classId ??
+      [...classIds][0] ??
+      'all-classes'
+
+    if (unattributedFailures > 0) {
+      classIds.add(fallbackClassId)
+    }
+
+    const summaries: ReportRequestClassSummary[] = []
+
+    for (const classId of classIds) {
+      const generatedCount = generated.get(classId)?.size ?? 0
+      const failedCount = failed.get(classId)?.size ?? 0
+      const extraFailures =
+        classId === fallbackClassId ? unattributedFailures : 0
+      unattributedFailures -= extraFailures
+      const skippedCount =
+        classIds.size === 1 ? batch.skippedCount : 0
+      const totalFailed = failedCount + extraFailures
+      const pupilCount = generatedCount + skippedCount + totalFailed
+
+      if (pupilCount === 0) {
         continue
       }
 
-      failedByClass.set(
-        failure.classId,
-        (failedByClass.get(failure.classId) ?? 0) + 1,
-      )
-    }
-
-    const classes = live.map((item) => {
-      const generatedCount = generatedByClass.get(item.classId) ?? 0
-      const failedCount = failedByClass.get(item.classId) ?? 0
       let status: ReportRequestClassSummary['status'] = 'PENDING'
 
       if (batch.status === 'RUNNING') {
         status = 'RUNNING'
-      } else if (failedCount > 0 && generatedCount > 0) {
+      } else if (totalFailed > 0 && generatedCount + skippedCount > 0) {
         status = 'PARTIAL'
-      } else if (failedCount > 0) {
+      } else if (totalFailed > 0) {
         status = 'FAILED'
-      } else if (generatedCount > 0) {
+      } else if (generatedCount + skippedCount > 0) {
         status = 'COMPLETED'
       }
 
-      return {
-        ...item,
+      summaries.push({
+        classId,
+        className: classNames.get(classId) ?? 'All classes',
+        pupilCount,
+        eligiblePupilCount: generatedCount + skippedCount,
+        acceptedResultCount: acceptedResults.get(classId) ?? 0,
+        ineligiblePupilCount: totalFailed,
         generatedCount,
-        failedCount,
+        failedCount: totalFailed,
         status,
-      }
-    })
+      })
+    }
 
-    return { batch, classes }
+    if (summaries.length > 0) {
+      return summaries.sort((a, b) => a.className.localeCompare(b.className))
+    }
+
+    // No per-pupil records and no class name: show the aggregate outcome so a
+    // failed batch can never look like a fresh, successful one.
+    return [
+      {
+        classId: fallbackClassId,
+        className: batch.className ?? 'All classes',
+        pupilCount: batch.requestedPupilCount,
+        eligiblePupilCount: batch.generatedCount + batch.skippedCount,
+        acceptedResultCount: [...acceptedResults.values()].reduce(
+          (total, count) => total + count,
+          0,
+        ),
+        ineligiblePupilCount: batch.failedCount,
+        generatedCount: batch.generatedCount,
+        failedCount: batch.failedCount,
+        status:
+          batch.status === 'RUNNING'
+            ? 'RUNNING'
+            : batch.failedCount > 0
+              ? batch.generatedCount > 0
+                ? 'PARTIAL'
+                : 'FAILED'
+              : batch.generatedCount > 0
+                ? 'COMPLETED'
+                : 'PENDING',
+      },
+    ]
   }
 
   /**
@@ -967,7 +1080,11 @@ export class ReportService {
           )
         }
 
-        await this.repository.deleteFailures(actor, batchId, [...failedPupils])
+        await this.repository.deleteFailures(
+          actor,
+          batchId,
+          targets.map((item) => item.build.pupil.id),
+        )
         await this.repository.recordBatchEvent(
           actor,
           batchId,
@@ -979,6 +1096,8 @@ export class ReportService {
           allowSkip: false,
           previousGenerated: batch.generatedCount,
           previousSkipped: batch.skippedCount,
+          previousFailed: Math.max(0, batch.failedCount - targets.length),
+          requestedPupilCount: null,
         })
       }
     }
@@ -1002,15 +1121,20 @@ export class ReportService {
 
     this.assertSchoolIdentityComplete(datasets[0]!.school)
 
-    // Generate only the pupils who are eligible at approval time. Pupils
-    // without complete accepted results are shown as ineligible in the request
-    // preflight; they are not converted into generation failures, so a single
-    // incomplete pupil cannot block the release of every other eligible report.
+    // Generate only the pupils who are eligible and have not already produced a
+    // version. A retry after a fatal error has no per-pupil failure rows, so the
+    // existing versions are the authoritative record of completed work.
+    const generatedPupilIds = new Set(
+      batch.versions.map((version) => version.pupilId),
+    )
     const targets = datasets
       .flatMap((data) =>
         buildReportSet(data).builds.map((build) => ({ data, build })),
       )
-      .filter((item) => item.build.eligible)
+      .filter(
+        (item) =>
+          item.build.eligible && !generatedPupilIds.has(item.build.pupil.id),
+      )
 
     if (targets.length === 0) {
       throw new HttpError(
@@ -1019,16 +1143,35 @@ export class ReportService {
       )
     }
 
+    const targetPupilIds = new Set(
+      targets.map((item) => item.build.pupil.id),
+    )
+    const remainingFailedPupils = new Set(
+      batch.failures
+        .map((failure) => failure.pupilId)
+        .filter(
+          (pupilId): pupilId is string =>
+            Boolean(pupilId) && !targetPupilIds.has(pupilId!),
+        ),
+    )
+    const previousGenerated =
+      batch.versions.length > 0 ? batch.generatedCount : 0
+    const previousSkipped = batch.versions.length > 0 ? batch.skippedCount : 0
+    const previousFailed = remainingFailedPupils.size
+
     await this.repository.deleteFailures(
       actor,
       batchId,
-      targets.map((item) => item.build.pupil.id),
+      [...targetPupilIds],
     )
 
     return this.runIntoBatch(actor, batch, targets, audit, {
       allowSkip: false,
-      previousGenerated: 0,
-      previousSkipped: 0,
+      previousGenerated,
+      previousSkipped,
+      previousFailed,
+      requestedPupilCount:
+        previousGenerated + previousSkipped + previousFailed + targets.length,
     })
   }
 
@@ -1041,9 +1184,16 @@ export class ReportService {
       allowSkip: boolean
       previousGenerated: number
       previousSkipped: number
+      previousFailed: number
+      /** First-run snapshot size; null on retry so the request is unchanged. */
+      requestedPupilCount: number | null
     },
   ): Promise<GenerateReportsResult> {
-    await this.repository.markBatchRunning(actor, batch.id)
+    await this.repository.markBatchRunning(
+      actor,
+      batch.id,
+      options.requestedPupilCount ?? undefined,
+    )
     await this.repository.recordBatchEvent(
       actor,
       batch.id,
@@ -1182,10 +1332,11 @@ export class ReportService {
 
     const totalGenerated = options.previousGenerated + generatedCount
     const totalSkipped = options.previousSkipped + skippedCount
+    const totalFailed = options.previousFailed + failedCount
     const status =
-      totalGenerated + totalSkipped === 0 && failedCount > 0
+      totalGenerated + totalSkipped === 0 && totalFailed > 0
         ? 'FAILED'
-        : failedCount > 0
+        : totalFailed > 0
           ? 'COMPLETED_WITH_FAILURES'
           : 'COMPLETED'
 
@@ -1193,7 +1344,7 @@ export class ReportService {
       status,
       generatedCount: totalGenerated,
       skippedCount: totalSkipped,
-      failedCount,
+      failedCount: totalFailed,
     })
 
     await this.repository.recordBatchEvent(
@@ -1206,7 +1357,7 @@ export class ReportService {
           : 'REPORT_GENERATION_COMPLETED',
       {
         generatedCount: totalGenerated,
-        failedCount,
+        failedCount: totalFailed,
         skippedCount: totalSkipped,
       },
     )
@@ -1569,12 +1720,18 @@ export class ReportService {
     message: string,
   ): Promise<void> {
     const batch = await this.getBatch(actor, batchId)
+    // Everything that was requested but neither generated nor skipped is a
+    // failure, including pupils the abort prevented from being attempted.
+    const failedCount = Math.max(
+      batch.failedCount,
+      batch.requestedPupilCount - batch.generatedCount - batch.skippedCount,
+    )
 
     await this.repository.completeBatch(actor, batchId, {
       status: 'FAILED',
       generatedCount: batch.generatedCount,
       skippedCount: batch.skippedCount,
-      failedCount: batch.failedCount,
+      failedCount,
       fatalError: message,
     })
 

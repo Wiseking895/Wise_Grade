@@ -561,9 +561,11 @@ describe('school profile branding routes', () => {
     expect(response.status).toBe(200)
     expect(response.headers['access-control-allow-origin']).toBe(TEST_ORIGIN)
     expect(response.headers['access-control-allow-credentials']).toBe('true')
-    // Helmet keeps a strict CORP default; the dashboard therefore uses a
-    // credentialed CORS image request instead of a plain no-cors <img>.
-    expect(response.headers['cross-origin-resource-policy']).toBe('same-origin')
+    // A private API origin must explicitly permit cross-origin embedding;
+    // otherwise Helmet's same-origin default blocks the authenticated <img>.
+    expect(response.headers['cross-origin-resource-policy']).toBe(
+      'cross-origin',
+    )
   })
 
   it('requires an authenticated session to read the logo', async () => {

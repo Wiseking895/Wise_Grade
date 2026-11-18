@@ -400,6 +400,8 @@ export interface ReportBatchDetail extends ReportBatchRecord {
     classId: string
     version: number
     generatedAt: Date
+    /** Accepted subject results captured in this version's immutable snapshot. */
+    acceptedResultCount: number
   }>
 }
 
@@ -483,7 +485,28 @@ export interface ReportRepository {
     audit: ReportAuditContext,
   ): Promise<ReportBatchRecord>
 
-  markBatchRunning(actor: ReportActor, batchId: string): Promise<void>
+  /**
+   * Creates a school term request while holding a per-school/term lock and
+   * rejecting a duplicate request for a reporting period that is still
+   * pending, already approved, or has produced report artifacts. A fully
+   * failed batch with no generated reports does not block a corrected request.
+   */
+  createRequestBatch(
+    actor: ReportActor,
+    input: ReportBatchCreateInput,
+    audit: ReportAuditContext,
+  ): Promise<ReportBatchRecord>
+
+  /**
+   * Atomically claims the batch for generation. For a first run the caller can
+   * replace `requestedPupilCount` with the exact pupil snapshot being
+   * generated, so the stored counters always reconcile.
+   */
+  markBatchRunning(
+    actor: ReportActor,
+    batchId: string,
+    requestedPupilCount?: number,
+  ): Promise<void>
 
   recordBatchEvent(
     actor: ReportActor,

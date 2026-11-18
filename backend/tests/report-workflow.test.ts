@@ -184,6 +184,66 @@ describe('ReportService term request', () => {
     )
   })
 
+  it('blocks a new request when a legacy class batch already produced reports', async () => {
+    const { service, repository } = requestService()
+    const existing = await repository.createBatch(
+      admin,
+      {
+        academicYearId: 'year-1',
+        academicTermId: 'term-1',
+        classId: 'class-1',
+        scope: 'CLASS',
+        requestedPupilCount: 1,
+        status: 'COMPLETED_WITH_FAILURES',
+        releaseStatus: 'PENDING_PLATFORM_REVIEW',
+      },
+      audit,
+    )
+    existing.generatedCount = 1
+    existing.failedCount = 1
+
+    await expect(
+      service.createRequest(
+        admin,
+        { academicYearId: 'year-1', academicTermId: 'term-1' },
+        audit,
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      details: { batchId: existing.id },
+    })
+  })
+
+  it('allows a corrected request after a fully failed batch produced nothing', async () => {
+    const { service, repository } = requestService()
+    const existing = await repository.createBatch(
+      admin,
+      {
+        academicYearId: 'year-1',
+        academicTermId: 'term-1',
+        classId: 'class-1',
+        scope: 'CLASS',
+        requestedPupilCount: 1,
+        status: 'FAILED',
+        releaseStatus: 'PENDING_PLATFORM_REVIEW',
+      },
+      audit,
+    )
+    existing.failedCount = 1
+
+    const result = await service.createRequest(
+      admin,
+      { academicYearId: 'year-1', academicTermId: 'term-1' },
+      audit,
+    )
+
+    expect(result.batch).toMatchObject({
+      scope: 'TERM',
+      status: 'PENDING',
+      releaseStatus: 'APPROVED',
+    })
+  })
+
   it('refuses to request reports when no accepted results exist', async () => {
     const data = makeReportData({ submissions: [] })
     data.scores = []
@@ -253,6 +313,85 @@ describe('ReportService term request', () => {
     expect(
       detail.classes.reduce((total, item) => total + item.generatedCount, 0),
     ).toBe(5)
+  })
+
+  it('keeps request counters on the original pupil snapshot after a later enrollment', async () => {
+    const { service, repository } = requestService()
+    const request = await service.createRequest(
+      admin,
+      { academicYearId: 'year-1', academicTermId: 'term-1' },
+      audit,
+    )
+
+    const generated = await service.generateIntoBatch(
+      admin,
+      request.batch.id,
+      audit,
+    )
+    expect(generated.batch.requestedPupilCount).toBe(3)
+    expect(generated.batch.generatedCount).toBe(3)
+
+    // Bright World enrolled a second pupil after the earlier request had
+    // already run. That pupil must not appear inside the finished request.
+    repository.data[0]!.pupils.push({
+      id: 'pupil-late-enrollee',
+      firstName: 'Late',
+      lastName: 'Enrollee',
+      otherNames: null,
+      admissionNumber: 'GVA/2026/099',
+      gender: null,
+      photoReference: null,
+      status: 'ACTIVE',
+    })
+
+    const detail = await service.getRequest(admin, request.batch.id)
+
+    expect(detail.classes).toHaveLength(1)
+    expect(detail.classes[0]).toMatchObject({
+      pupilCount: 3,
+      generatedCount: 3,
+      failedCount: 0,
+      ineligiblePupilCount: 0,
+      // Three accepted subjects (from the immutable snapshot) per pupil.
+      acceptedResultCount: 9,
+      status: 'COMPLETED',
+    })
+    expect(
+      detail.batch.generatedCount +
+        detail.batch.skippedCount +
+        detail.batch.failedCount,
+    ).toBe(detail.batch.requestedPupilCount)
+  })
+
+  it('reconciles counters when a request aborts before any pupil is generated', async () => {
+    const { service } = requestService()
+    const request = await service.createRequest(
+      admin,
+      { academicYearId: 'year-1', academicTermId: 'term-1' },
+      audit,
+    )
+
+    await service.failBatch(
+      admin,
+      request.batch.id,
+      'Private storage is unavailable.',
+    )
+
+    const detail = await service.getRequest(admin, request.batch.id)
+
+    expect(detail.batch.failedCount).toBe(detail.batch.requestedPupilCount)
+    expect(
+      detail.batch.generatedCount +
+        detail.batch.skippedCount +
+        detail.batch.failedCount,
+    ).toBe(detail.batch.requestedPupilCount)
+    expect(detail.classes).toHaveLength(1)
+    expect(detail.classes[0]).toMatchObject({
+      pupilCount: detail.batch.requestedPupilCount,
+      failedCount: detail.batch.failedCount,
+      acceptedResultCount: 0,
+      status: 'FAILED',
+    })
   })
 
   it('links generated versions to the request and keeps accepted snapshots', async () => {

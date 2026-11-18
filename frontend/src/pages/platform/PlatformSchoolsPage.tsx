@@ -639,6 +639,7 @@ export default function PlatformSchoolsPage() {
                 <img
                   src={apiAssetUrl(detail.logoUrl)}
                   alt={`${detail.name} logo`}
+                  crossOrigin="use-credentials"
                   className="size-16 rounded-xl border border-slate-200 object-contain p-1"
                 />
               ) : (

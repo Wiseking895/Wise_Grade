@@ -248,6 +248,10 @@ export function createPlatformRouter(
       res.setHeader('Content-Length', String(data.length))
       res.setHeader('Cache-Control', 'private, max-age=300')
       res.setHeader('X-Content-Type-Options', 'nosniff')
+      // The platform dashboard is served from a different origin than the API.
+      // Helmet's default same-origin CORP header would block this authenticated
+      // image response; the route stays private behind the platform-admin guard.
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
       res.status(200).send(data)
     } catch (error) {
       next(error)

@@ -21,6 +21,7 @@ import type {
   ReportVersionRecord,
   SaveGeneratedReportInput,
 } from '../../src/reports/repository.js'
+import { blocksNewTermRequest } from '../../src/reports/request-guard.js'
 
 interface StoredCard extends ReportCardRecord {
   academicTermId: string
@@ -47,6 +48,22 @@ function fullName(pupil: {
 
 function key(...parts: string[]): string {
   return parts.join(':')
+}
+
+function acceptedSubmissionsFromSnapshot(snapshot: unknown): number {
+  if (typeof snapshot !== 'object' || snapshot === null) {
+    return 0
+  }
+
+  const source = (snapshot as Record<string, unknown>).source
+
+  if (typeof source !== 'object' || source === null) {
+    return 0
+  }
+
+  const value = (source as Record<string, unknown>).acceptedSubmissions
+
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
 /**
@@ -406,7 +423,35 @@ export class FakeReportRepository implements ReportRepository {
     return record
   }
 
-  async markBatchRunning(actor: ReportActor, batchId: string) {
+  async createRequestBatch(
+    actor: ReportActor,
+    input: ReportBatchCreateInput,
+    audit: ReportAuditContext,
+  ) {
+    const blocking = [...this.batches.values()].find(
+      (batch) =>
+        batch.schoolId === actor.schoolId &&
+        batch.academicYearId === input.academicYearId &&
+        batch.academicTermId === input.academicTermId &&
+        blocksNewTermRequest(batch),
+    )
+
+    if (blocking) {
+      throw new HttpError(
+        409,
+        'A report-generation request for this term is already awaiting platform generation or has already produced reports.',
+        { batchId: blocking.id },
+      )
+    }
+
+    return this.createBatch(actor, input, audit)
+  }
+
+  async markBatchRunning(
+    actor: ReportActor,
+    batchId: string,
+    requestedPupilCount?: number,
+  ) {
     const batch = this.batches.get(batchId)
 
     if (!batch || batch.schoolId !== actor.schoolId) {
@@ -426,6 +471,10 @@ export class FakeReportRepository implements ReportRepository {
 
     batch.status = 'RUNNING'
     batch.startedAt = new Date()
+
+    if (requestedPupilCount !== undefined) {
+      batch.requestedPupilCount = requestedPupilCount
+    }
   }
 
   async recordBatchEvent(
@@ -731,6 +780,9 @@ export class FakeReportRepository implements ReportRepository {
           classId: card.classId,
           version: version.version,
           generatedAt: version.generatedAt,
+          acceptedResultCount: acceptedSubmissionsFromSnapshot(
+            version.snapshot,
+          ),
         }
       })
 

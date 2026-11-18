@@ -181,11 +181,10 @@ function SchoolLogo({
       className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white ${className}`}
     >
       {logoSrc ? (
-        // The API is a separate origin from the web app. Helmet sends
-        // Cross-Origin-Resource-Policy: same-origin, so a plain <img> request
-        // is blocked even though the route is authenticated. A credentialed
-        // CORS request uses the API's existing Origin allow-list and never
-        // exposes the private storage key.
+        // The API is a separate origin from the web app. The logo route returns
+        // `Cross-Origin-Resource-Policy: cross-origin` and participates in the
+        // API's credentialed CORS allow-list, so this authenticated image loads
+        // without exposing the private storage key.
         <img
           src={apiAssetUrl(logoSrc)}
           alt={`${name} logo`}

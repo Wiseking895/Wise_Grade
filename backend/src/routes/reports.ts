@@ -263,6 +263,7 @@ export function createReportsRouter(
         )
         res.setHeader('Cache-Control', 'private, no-store')
         res.setHeader('X-Content-Type-Options', 'nosniff')
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
         res.status(200).send(file.data)
       } catch (error) {
         next(error)

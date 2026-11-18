@@ -382,6 +382,10 @@ export function createSchoolsRouter(
       res.setHeader('Content-Length', String(data.length))
       res.setHeader('Cache-Control', 'private, max-age=300')
       res.setHeader('X-Content-Type-Options', 'nosniff')
+      // The web app and API are different origins. Helmet's default
+      // same-origin CORP header blocks this authenticated <img> response even
+      // when the request carries credentials; the route remains private.
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
       res.status(200).send(data)
     } catch (error) {
       next(error)
@@ -465,6 +469,7 @@ export function createSchoolsRouter(
         res.setHeader('Content-Length', String(data.length))
         res.setHeader('Cache-Control', 'private, no-store')
         res.setHeader('X-Content-Type-Options', 'nosniff')
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
         res.status(200).send(data)
       } catch (error) {
         next(error)
@@ -1294,6 +1299,7 @@ export function createSchoolsRouter(
         res.setHeader('Content-Length', String(data.length))
         res.setHeader('Cache-Control', 'private, max-age=300')
         res.setHeader('X-Content-Type-Options', 'nosniff')
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
         res.status(200).send(data)
       } catch (error) {
         next(error)

@@ -15,6 +15,7 @@ import type {
   ReportSettingsRecord,
   ReportVersionRecord,
 } from './repository.js'
+import { blocksNewTermRequest } from './request-guard.js'
 
 type Tx = Prisma.TransactionClient
 
@@ -216,6 +217,22 @@ export function mapReportBatch(row: {
     releasedByUserId: row.releasedByUserId,
     createdAt: row.createdAt,
   }
+}
+
+function acceptedSubmissionsFromSnapshot(snapshot: unknown): number {
+  if (typeof snapshot !== 'object' || snapshot === null) {
+    return 0
+  }
+
+  const source = (snapshot as Record<string, unknown>).source
+
+  if (typeof source !== 'object' || source === null) {
+    return 0
+  }
+
+  const value = (source as Record<string, unknown>).acceptedSubmissions
+
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
 function mapVersion(
@@ -1058,7 +1075,71 @@ export function createPrismaReportRepository(): ReportRepository {
       return mapReportBatch(row)
     },
 
-    async markBatchRunning(actor, batchId) {
+    async createRequestBatch(actor, input, auditContext) {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        // Serialise concurrent request submissions for the same reporting
+        // period. The key is tenant-scoped, so unrelated schools never wait.
+        const lockKey = `report-request:${actor.schoolId}:${input.academicYearId}:${input.academicTermId}`
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`
+
+        const existingRows = await tx.reportGenerationBatch.findMany({
+          where: {
+            schoolId: actor.schoolId,
+            academicYearId: input.academicYearId,
+            academicTermId: input.academicTermId,
+          },
+          orderBy: { createdAt: 'desc' },
+        })
+        const blocking = existingRows
+          .map(mapReportBatch)
+          .find(blocksNewTermRequest)
+
+        if (blocking) {
+          throw new HttpError(
+            409,
+            'A report-generation request for this term is already awaiting platform generation or has already produced reports.',
+            { batchId: blocking.id },
+          )
+        }
+
+        const row = await tx.reportGenerationBatch.create({
+          data: {
+            schoolId: actor.schoolId,
+            academicYearId: input.academicYearId,
+            academicTermId: input.academicTermId,
+            classId: input.classId,
+            scope: input.scope,
+            status: input.status ?? 'PENDING',
+            releaseStatus: input.releaseStatus ?? 'GENERATED',
+            requestedByMembershipId: actor.membershipId,
+            requestedPupilCount: input.requestedPupilCount,
+            submittedAt: input.submittedAt ?? null,
+            submittedByMembershipId: input.submittedByMembershipId ?? null,
+          },
+        })
+
+        await audit(
+          tx,
+          actor.schoolId,
+          auditContext,
+          input.auditAction ?? 'REPORT_BATCH_REQUESTED',
+          'ReportGenerationBatch',
+          row.id,
+          {
+            scope: row.scope,
+            classId: row.classId,
+            requestedPupilCount: row.requestedPupilCount,
+            releaseStatus: row.releaseStatus,
+          },
+        )
+
+        return mapReportBatch(row)
+      })
+    },
+
+    async markBatchRunning(actor, batchId, requestedPupilCount) {
       const prisma = getPrismaClient()
       // Claim the batch atomically. A concurrent click sees the RUNNING (or
       // already-completed) row and cannot start a second generation run.
@@ -1068,7 +1149,11 @@ export function createPrismaReportRepository(): ReportRepository {
           schoolId: actor.schoolId,
           status: { in: ['PENDING', 'FAILED', 'COMPLETED_WITH_FAILURES'] },
         },
-        data: { status: 'RUNNING', startedAt: new Date() },
+        data: {
+          status: 'RUNNING',
+          startedAt: new Date(),
+          ...(requestedPupilCount === undefined ? {} : { requestedPupilCount }),
+        },
       })
 
       if (result.count === 0) {
@@ -1496,6 +1581,9 @@ export function createPrismaReportRepository(): ReportRepository {
           classId: version.reportCard.classId,
           version: version.version,
           generatedAt: version.generatedAt,
+          acceptedResultCount: acceptedSubmissionsFromSnapshot(
+            version.snapshot,
+          ),
         })),
       } satisfies ReportBatchDetail
     },

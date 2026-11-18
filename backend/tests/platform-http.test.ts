@@ -221,6 +221,12 @@ describe('Platform Super Admin dashboard HTTP routes', () => {
       )
       expect(allowed.status).toBe(200)
       expect(allowed.headers['content-type']).toContain('image/png')
+      expect(allowed.headers['cache-control']).toBe('private, max-age=300')
+      // The platform dashboard runs on a different origin; a same-origin CORP
+      // default would block this authenticated image.
+      expect(allowed.headers['cross-origin-resource-policy']).toBe(
+        'cross-origin',
+      )
 
       const denied = await schoolAgent.get(
         '/api/platform/schools/school-1/logo',

@@ -114,6 +114,26 @@ describe('school role separation', () => {
     assert.doesNotMatch(api, /subject-teacher\/activate/)
   })
 
+  it('probes the restricted subject session only when the browser hints at one', async () => {
+    const provider = await source('../src/auth/AuthProvider.tsx')
+    const api = await source('../src/lib/api.ts')
+
+    // The subject-session cookie belongs to the API origin and is HttpOnly, so
+    // the web app cannot read it. The hint must therefore be origin-local
+    // storage rather than document.cookie.
+    assert.match(api, /rememberSubjectSessionHint/)
+    assert.match(api, /localStorage/)
+    assert.doesNotMatch(api, /document\.cookie/)
+
+    const hintAt = provider.indexOf('hasSubjectSessionHint()')
+    const probeAt = provider.indexOf('await fetchSubjectSession()')
+
+    assert.ok(hintAt >= 0, 'loadAuthState must check the hint')
+    assert.ok(probeAt > hintAt, 'the hint must gate the subject probe')
+    assert.match(provider, /rememberSubjectSessionHint\(\)/)
+    assert.match(provider, /clearSubjectSessionHint\(\)/)
+  })
+
   it('reuses the class workspace and assessment register for subject sessions', async () => {
     const overview = await source(
       '../src/pages/dashboard/DashboardOverviewPage.tsx',
