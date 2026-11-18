@@ -1,6 +1,6 @@
 import request from 'supertest'
-import { describe, expect, it } from 'vitest'
-import { createApp } from '../src/app.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createApp, type AppOptions } from '../src/app.js'
 import {
   clearSessionCookieOptions,
   sessionCookieOptions,
@@ -18,7 +18,7 @@ import { FakeAuthRepository } from './helpers/fake-auth-repository.js'
 const FRONTEND_ORIGIN = 'https://frontend-esf6.vercel.app'
 const WEBHOOK_SECRET = 'serverless-raw-body-test-secret'
 
-function createTestApp() {
+function createTestApp(overrides: Partial<AppOptions> = {}) {
   return createApp({
     authRepository: new FakeAuthRepository(),
     reportStorage: new MemoryStorageAdapter(),
@@ -33,10 +33,15 @@ function createTestApp() {
       },
     },
     cronSecret: '',
+    ...overrides,
   })
 }
 
 describe('Vercel serverless entry point', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('serves /api/health through the handler without listen or a database', async () => {
     const handler = createServerlessHandler(createTestApp)
 
@@ -48,6 +53,52 @@ describe('Vercel serverless entry point', () => {
       service: 'gradely-api',
       database: 'not_checked',
     })
+    expect(response.headers['cache-control']).toBe('no-store')
+  })
+
+  it('serves /api/ready through the handler with the injected database probe', async () => {
+    const check = vi.fn(async () => {})
+    const handler = createServerlessHandler(() =>
+      createTestApp({ databaseReadinessCheck: check }),
+    )
+
+    const response = await request(handler).get('/api/ready')
+
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({
+      status: 'ok',
+      service: 'gradely-api',
+      database: 'connected',
+    })
+    expect(response.headers['cache-control']).toBe('no-store')
+  })
+
+  it('serves a sanitized 503 from /api/ready through the handler', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const handler = createServerlessHandler(() =>
+      createTestApp({
+        databaseReadinessCheck: async () => {
+          throw new Error(
+            'connect ECONNREFUSED postgresql://gradely:super-secret@db.internal.example:5432/gradely',
+          )
+        },
+      }),
+    )
+
+    const response = await request(handler).get('/api/ready')
+
+    expect(response.status).toBe(503)
+    expect(response.body).toMatchObject({
+      status: 'error',
+      service: 'gradely-api',
+      database: 'unavailable',
+    })
+    expect(response.headers['cache-control']).toBe('no-store')
+
+    const publicBody = JSON.stringify(response.body)
+    expect(publicBody).not.toContain('super-secret')
+    expect(publicBody).not.toContain('db.internal.example')
   })
 
   it('reuses one Express instance per warm function instance', () => {

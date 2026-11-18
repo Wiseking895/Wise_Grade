@@ -11,6 +11,10 @@ import {
 } from './middleware/error-handler.js'
 import { createAuthRouter } from './routes/auth.js'
 import { healthRouter } from './routes/health.js'
+import {
+  createReadinessRouter,
+  type DatabaseReadinessCheck,
+} from './routes/readiness.js'
 import { createSchoolsRouter } from './routes/schools.js'
 import type { CalendarRepository } from './calendar/types.js'
 import type { CalendarService } from './calendar/service.js'
@@ -146,6 +150,12 @@ export interface AppOptions {
    * derive it from configuration via `getAllowedOrigins()`.
    */
   allowedOrigins?: string[]
+  /**
+   * Injectable public database-readiness probe. Production reuses the shared
+   * Prisma client for a read-only `SELECT 1`; tests inject a deterministic
+   * check so they never contact a real database.
+   */
+  databaseReadinessCheck?: DatabaseReadinessCheck
 }
 
 export function createApp(options: AppOptions = {}): Express {
@@ -293,6 +303,7 @@ export function createApp(options: AppOptions = {}): Express {
   app.use(express.urlencoded({ extended: false, limit: '1mb' }))
 
   app.use('/api/health', healthRouter)
+  app.use('/api/ready', createReadinessRouter(options.databaseReadinessCheck))
   app.use(
     '/api/auth',
     createAuthRouter(authRepository, {

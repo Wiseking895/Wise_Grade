@@ -220,8 +220,10 @@ scheduler, set `CALENDAR_SCHEDULER_ENABLED=false` and remove the Cron entry.
 3. Confirm the project uses repository `Wiseking895/Wise_Grade`, Root Directory
    `backend`, Framework Preset Other, and the latest `vercel.json`.
 4. Deploy. The build runs `prisma generate` and `tsc`.
-5. Open `https://gradely-backend.vercel.app/api/health` (or the project's
-   current production URL).
+5. Open `https://gradely-backend.vercel.app/api/health` and
+   `https://gradely-backend.vercel.app/api/ready` (or the project's current
+   production URL). `health` proves the function is running; `ready` proves Neon
+   is reachable from the deployed function.
 6. Verify CORS with a preflight from the frontend origin.
 7. Verify the scheduler endpoint with the bearer token (expect a run summary or
    `executed: false, reason: LOCKED` if another run is active).
@@ -229,13 +231,55 @@ scheduler, set `CALENDAR_SCHEDULER_ENABLED=false` and remove the Cron entry.
 
 ## 7. Health verification
 
+### Liveness
+
 ```bash
 curl -i https://<backend-origin>/api/health
 ```
 
-Expected: `200`, `"service":"gradely-api"`, `"database":"not_checked"`. This
-endpoint intentionally does not open a database connection, so it still answers
-during a Neon incident.
+Expected: `200`, `"service":"gradely-api"`, `"database":"not_checked"`, and
+`Cache-Control: no-store`. This endpoint intentionally does not open a database
+connection, so it still answers during a Neon incident.
+
+### Database readiness
+
+```bash
+curl -i https://<backend-origin>/api/ready
+```
+
+Expected when Neon is reachable with the configured pooled `DATABASE_URL`:
+`200` and
+
+```json
+{
+  "status": "ok",
+  "service": "gradely-api",
+  "database": "connected",
+  "timestamp": "ISO_TIMESTAMP"
+}
+```
+
+`/api/ready` performs one read-only `SELECT 1` through the shared Prisma client
+and never reads or writes application tables. Expected when the database cannot
+be reached: `503` and
+
+```json
+{
+  "status": "error",
+  "service": "gradely-api",
+  "database": "unavailable",
+  "timestamp": "ISO_TIMESTAMP"
+}
+```
+
+Both responses set `Cache-Control: no-store`. The failure response is
+deliberately generic: connection strings, hostnames, SQL text and Prisma error
+messages stay in the server log. A `503` therefore means "check Neon reachability
+and the production `DATABASE_URL`", not "the deployment failed".
+
+Readiness is only proven by calling the deployed endpoint. Local tests inject the
+probe, so a green local suite does not by itself confirm production Neon
+connectivity.
 
 Preflight:
 

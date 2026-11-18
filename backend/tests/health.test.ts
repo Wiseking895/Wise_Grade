@@ -16,6 +16,7 @@ describe('GET /api/health', () => {
     })
     expect(typeof response.body.timestamp).toBe('string')
     expect(typeof response.body.uptimeSeconds).toBe('number')
+    expect(response.headers['cache-control']).toBe('no-store')
   })
 })
 
