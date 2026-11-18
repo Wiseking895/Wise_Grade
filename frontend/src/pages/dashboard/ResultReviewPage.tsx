@@ -173,7 +173,7 @@ export default function ResultReviewPage() {
       })
       setSuccess(
         response.submission.status === 'ACCEPTED'
-          ? 'Results accepted for internal academic review. They are now immutable; report card release is a later phase.'
+          ? 'Results accepted. They are now immutable and eligible for the platform to generate report cards.'
           : 'Results returned for correction and unlocked for the teacher.',
       )
       setComment('')
@@ -195,7 +195,7 @@ export default function ResultReviewPage() {
     <div className="space-y-6">
       <PageHeader
         title="Result review"
-        description="Review submitted subject sheets and record internal academic acceptance, or return them to the teacher for correction. Acceptance here is not final report card release."
+        description="Review submitted subject sheets and record the school's academic acceptance, or return them to the teacher for correction. Accepted results become eligible for platform report generation."
         actions={
           submissionId ? (
             <Link
@@ -329,13 +329,15 @@ export default function ResultReviewPage() {
 
             <div className="mt-4 rounded-xl border border-gradely-blue/20 bg-gradely-blue/5 p-3 text-sm leading-relaxed text-gradely-navy">
               <p className="font-semibold">
-                Acceptance is an internal academic review step
+                Acceptance is the school's academic decision
               </p>
               <p className="mt-1 text-gradely-muted">
-                It records school approval of the entered results. It does not
-                release report cards to families, generate PDFs, or trigger
-                payment. Accepted results become immutable; later changes need a
-                new assessment cycle. Report release belongs to a later phase.
+                It records school approval of the entered results. Once every
+                required subject is accepted, the school can request report
+                generation and the platform generates the reports. There is no
+                separate approval, manual release or payment step. Accepted
+                results become immutable; later changes need a new assessment
+                cycle.
               </p>
             </div>
 
@@ -589,7 +591,7 @@ export default function ResultReviewPage() {
         }
         description={
           confirmDecision === 'ACCEPTED'
-            ? 'Accepting records internal school approval and makes the results immutable. It does not release report cards, generate PDFs, or trigger payment. Use a new assessment cycle for later changes.'
+            ? 'Accepting records the school academic decision and makes the results immutable. Accepted results become eligible for platform report generation. Use a new assessment cycle for later changes.'
             : 'Returning unlocks the sheet so the teacher can correct it and resubmit. The review comment is shared with the teacher and kept in the audit trail.'
         }
         confirmLabel={

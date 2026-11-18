@@ -741,9 +741,10 @@ export class ReportService {
   }
 
   /**
-   * Creates the school's report-generation request. The request is represented
-   * by a term-scoped batch that is already in the platform review queue, so a
-   * single approval can generate every eligible class without a schema change.
+   * Creates the school's report-generation request. Academic acceptance has
+   * already happened in the school workspace; the request is therefore created
+   * in the APPROVED state, ready for the platform's single Generate Reports
+   * action. No developer approval step exists.
    */
   async createRequest(
     actor: ReportActor,
@@ -772,7 +773,7 @@ export class ReportService {
     if (existing) {
       throw new HttpError(
         409,
-        'A report-generation request for this term is already awaiting platform review.',
+        'A report-generation request for this term is already awaiting platform generation.',
         { batchId: existing.id },
       )
     }
@@ -818,7 +819,7 @@ export class ReportService {
         scope: 'TERM',
         requestedPupilCount: eligiblePupilCount,
         status: 'PENDING',
-        releaseStatus: 'PENDING_PLATFORM_REVIEW',
+        releaseStatus: 'APPROVED',
         submittedAt: new Date(),
         submittedByMembershipId: actor.membershipId,
         auditAction: 'REPORT_REQUEST_SUBMITTED',

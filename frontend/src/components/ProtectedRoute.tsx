@@ -116,6 +116,28 @@ export function ClassTeacherRoute({ children }: { children: ReactNode }) {
 }
 
 /**
+ * Submission tracking and review history are visible to school administrators
+ * and teaching staff. Score-entry writes remain teacher-only.
+ */
+export function AssessmentRecordsRoute({
+  children,
+}: {
+  children: ReactNode
+}) {
+  const { role } = useSchool()
+
+  if (
+    role !== 'SCHOOL_ADMIN' &&
+    role !== 'CLASS_TEACHER' &&
+    role !== 'SUBJECT_TEACHER'
+  ) {
+    return <Navigate to="/dashboard" replace />
+  }
+
+  return <>{children}</>
+}
+
+/**
  * The standalone class listing is a read-only reference for subject teachers.
  * Class teachers manage their own class from the Class Dashboard instead, and a
  * restricted subject access-code session has no standalone listing at all.

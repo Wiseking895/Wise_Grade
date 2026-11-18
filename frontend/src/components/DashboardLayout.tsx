@@ -1,6 +1,7 @@
 import {
   CalendarCheck,
   CalendarDays,
+  ClipboardCheck,
   ClipboardList,
   FileText,
   GraduationCap,
@@ -45,13 +46,11 @@ const ALL_SCHOOL_ROLES: SchoolRole[] = [
 ]
 
 /**
- * The school workspace is deliberately narrow. Academic operations, report
- * generation, batches and release belong to the platform workspace. Schools may
- * view invoices and submit payment evidence, but only the platform verifies
- * payments, approves batches and releases reports. School administrators keep
+ * The school workspace is deliberately narrow. School administrators own
+ * academic review and acceptance; the platform owns report generation. Teachers
+ * enter scores and manage their assigned classes. School administrators keep
  * read-only class/subject/pupil visibility, teacher registration and
- * administrative information. Classes and pupils are managed by teaching staff;
- * the subject catalogue is maintained by class teachers.
+ * administrative information.
  */
 const NAV_ITEMS: NavItem[] = [  {
     to: '/dashboard',
@@ -124,7 +123,13 @@ const NAV_ITEMS: NavItem[] = [  {
     to: '/dashboard/assessments/submissions',
     label: 'Submissions',
     icon: ClipboardList,
-    roles: TEACHER_ROLES,
+    roles: ['SCHOOL_ADMIN', 'CLASS_TEACHER', 'SUBJECT_TEACHER'],
+  },
+  {
+    to: '/dashboard/assessments/review',
+    label: 'Result review',
+    icon: ClipboardCheck,
+    roles: ADMIN_ROLES,
   },
   {
     to: '/dashboard/reports',

@@ -426,8 +426,8 @@ export default function CalendarPage() {
             <p>
               Assessment deadlines and examination periods are configured
               independently by the Platform Super Admin and shown exactly as
-              approved. Report release remains subject to the school’s Wise
-              Grade billing status and the separate report approval workflow.
+              approved. Report generation is a separate platform action and is
+              not gated by payment.
             </p>
           </div>
         </>

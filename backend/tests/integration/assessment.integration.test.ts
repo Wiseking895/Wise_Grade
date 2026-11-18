@@ -1712,9 +1712,32 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     expect(locked.status).toBe(409)
 
     const platform = await ensurePlatformAgent()
-    const returned = await platform
+    const refused = await platform
       .post(
         `/api/platform/assessments/schools/${fixture.schoolId}/submissions/${submitted.id}/review`,
+      )
+      .set('Origin', TEST_ORIGIN)
+      .send({
+        decision: 'RETURNED_FOR_CORRECTION',
+        comment: 'Platform review is not allowed.',
+        expectedVersion: submitted.version,
+      })
+    expect(refused.status).toBe(403)
+
+    const teacherRefused = await ctAgent
+      .post(
+        `/api/schools/${fixture.schoolId}/assessments/submissions/${submitted.id}/review`,
+      )
+      .set('Origin', TEST_ORIGIN)
+      .send({
+        decision: 'ACCEPTED',
+        expectedVersion: submitted.version,
+      })
+    expect(teacherRefused.status).toBe(403)
+
+    const returned = await admin
+      .post(
+        `/api/schools/${fixture.schoolId}/assessments/submissions/${submitted.id}/review`,
       )
       .set('Origin', TEST_ORIGIN)
       .send({
@@ -1800,9 +1823,9 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     }>(resubmit).submission
     expect(resubmitted.status).toBe('SUBMITTED')
 
-    const accepted = await platform
+    const accepted = await admin
       .post(
-        `/api/platform/assessments/schools/${fixture.schoolId}/submissions/${submitted.id}/review`,
+        `/api/schools/${fixture.schoolId}/assessments/submissions/${submitted.id}/review`,
       )
       .set('Origin', TEST_ORIGIN)
       .send({

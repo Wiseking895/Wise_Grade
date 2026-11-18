@@ -1060,13 +1060,31 @@ export function createPrismaReportRepository(): ReportRepository {
 
     async markBatchRunning(actor, batchId) {
       const prisma = getPrismaClient()
+      // Claim the batch atomically. A concurrent click sees the RUNNING (or
+      // already-completed) row and cannot start a second generation run.
       const result = await prisma.reportGenerationBatch.updateMany({
-        where: { id: batchId, schoolId: actor.schoolId },
+        where: {
+          id: batchId,
+          schoolId: actor.schoolId,
+          status: { in: ['PENDING', 'FAILED', 'COMPLETED_WITH_FAILURES'] },
+        },
         data: { status: 'RUNNING', startedAt: new Date() },
       })
 
       if (result.count === 0) {
-        throw new HttpError(404, 'Report generation batch not found')
+        const exists = await prisma.reportGenerationBatch.findFirst({
+          where: { id: batchId, schoolId: actor.schoolId },
+          select: { id: true },
+        })
+
+        if (!exists) {
+          throw new HttpError(404, 'Report generation batch not found')
+        }
+
+        throw new HttpError(
+          409,
+          'Report generation is already running or this request has already been generated.',
+        )
       }
     },
 

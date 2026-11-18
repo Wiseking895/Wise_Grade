@@ -1,6 +1,5 @@
 import { Router, type Request, type RequestHandler, type Response } from 'express'
 import type { z } from 'zod'
-import { parseBody } from '../auth/validation.js'
 import type { AuthRepository } from '../auth/repository.js'
 import { HttpError } from '../errors/http-error.js'
 import { createAuthenticate } from '../middleware/authenticate.js'
@@ -13,7 +12,6 @@ import {
 } from '../platform/notifications.js'
 import type {
   ReportActor,
-  ReportAuditContext,
 } from '../reports/repository.js'
 import type { ReportReleaseAuditContext } from '../reports/release-repository.js'
 import type {
@@ -23,11 +21,9 @@ import type {
 import type { ReportService } from '../reports/service.js'
 import type { ReportWorkflowService } from '../reports/workflow-service.js'
 import {
-  generateReportsSchema,
   platformReportBatchesQuerySchema,
   reportClassesQuerySchema,
   reportEligibilityQuerySchema,
-  reportReleaseReasonSchema,
 } from '../reports/validation.js'
 
 export interface PlatformReportsRouterOptions {
@@ -83,17 +79,6 @@ function platformReportActor(req: Request, schoolId: string): ReportActor {
   }
 }
 
-function platformReportAudit(req: Request): ReportAuditContext {
-  const auth = requireAuth(req)
-
-  return {
-    actorUserId: auth.user.id,
-    actorMembershipId: null,
-    ipAddress: req.ip ?? null,
-    userAgent: req.get('user-agent') ?? null,
-  }
-}
-
 function parseQuery<T>(schema: z.ZodType<T>, query: unknown): T {
   const result = schema.safeParse(query)
 
@@ -123,11 +108,13 @@ function sendPdf(res: Response, data: Buffer, fileName: string): void {
 }
 
 /**
- * Platform-super-admin report review and release routes.
+ * Platform-super-admin report generation routes.
  *
- * Approval and release are separate operations. Every action is audited and
- * every preview streams private bytes through the backend; no object key or
- * public storage URL is ever returned.
+ * An accepted request has exactly two operational actions: Generate Reports and,
+ * after a partial or fatal failure, Retry. Generation consumes only accepted
+ * academic results and the completed batch becomes available automatically.
+ * There is no platform academic review, second approval or manual release route.
+ * Every action is audited and previews stream private bytes through the backend.
  */
 export function createPlatformReportsRouter(
   authRepository: AuthRepository,
@@ -222,41 +209,6 @@ export function createPlatformReportsRouter(
     },
   )
 
-  router.post(
-    '/schools/:schoolId/reports/generate',
-    writeLimiter,
-    async (req, res, next) => {
-      try {
-        const schoolId = routeParam(req, 'schoolId')
-        const input = parseBody(generateReportsSchema, req.body)
-        const generated = await reportService.generate(
-          platformReportActor(req, schoolId),
-          input,
-          platformReportAudit(req),
-        )
-        const batch = await service.submitGenerated(
-          generated.batch.id,
-          schoolId,
-          auditFromRequest(req),
-        )
-
-        await notifyBatch(
-          'REPORT_BATCH_SUBMITTED',
-          'INFO',
-          `Report batch submitted by ${batch.schoolName}`,
-          batch,
-          String(batch.submittedAt),
-        )
-
-        res.status(201).json({
-          data: { batch, results: generated.results },
-        })
-      } catch (error) {
-        next(error)
-      }
-    },
-  )
-
   router.get('/batches', async (req, res, next) => {
     try {
       const query = parseQuery(platformReportBatchesQuerySchema, req.query)
@@ -305,81 +257,28 @@ export function createPlatformReportsRouter(
     },
   )
 
+  // The developer's only operational action for an accepted request.
   router.post(
-    '/batches/:batchId/queue',
-    writeLimiter,
-    async (req, res, next) => {
-      try {
-        const existing = await service.getPlatformBatch(
-          routeParam(req, 'batchId'),
-        )
-        const batch = await service.submitGenerated(
-          existing.id,
-          existing.schoolId,
-          auditFromRequest(req),
-        )
-        await notifyBatch(
-          'REPORT_BATCH_SUBMITTED',
-          'INFO',
-          `Report batch submitted by ${batch.schoolName}`,
-          batch,
-          String(batch.submittedAt),
-        )
-        res.status(200).json({ data: { batch } })
-      } catch (error) {
-        next(error)
-      }
-    },
-  )
-
-  router.post(
-    '/batches/:batchId/approve',
+    '/batches/:batchId/generate',
     writeLimiter,
     reauth,
     async (req, res, next) => {
       try {
-        const outcome = await workflow.approve(
+        const outcome = await workflow.generate(
           { userId: requireAuth(req).user.id },
           routeParam(req, 'batchId'),
           auditFromRequest(req),
         )
         await notifyBatch(
-          'REPORT_REQUEST_APPROVED',
+          'REPORT_REQUEST_GENERATED',
           outcome.batch.releaseStatus === 'RELEASED' ? 'SUCCESS' : 'WARNING',
           outcome.batch.releaseStatus === 'RELEASED'
-            ? `Reports generated and released for ${outcome.batch.schoolName}`
+            ? `Reports generated for ${outcome.batch.schoolName}`
             : `Report generation needs attention for ${outcome.batch.schoolName}`,
           outcome.batch,
-          String(outcome.batch.reviewedAt),
+          `${outcome.batch.generatedCount}:${outcome.batch.failedCount}`,
         )
         res.status(200).json({ data: outcome })
-      } catch (error) {
-        next(error)
-      }
-    },
-  )
-
-  router.post(
-    '/batches/:batchId/reject',
-    writeLimiter,
-    reauth,
-    async (req, res, next) => {
-      try {
-        const input = parseBody(reportReleaseReasonSchema, req.body)
-        const batch = await workflow.reject(
-          { userId: requireAuth(req).user.id },
-          routeParam(req, 'batchId'),
-          input.reason,
-          auditFromRequest(req),
-        )
-        await notifyBatch(
-          'REPORT_REQUEST_REJECTED',
-          'WARNING',
-          `Report request rejected for ${batch.schoolName}`,
-          batch,
-          String(batch.reviewedAt),
-        )
-        res.status(200).json({ data: { batch } })
       } catch (error) {
         next(error)
       }
@@ -405,109 +304,6 @@ export function createPlatformReportsRouter(
           `${outcome.batch.generatedCount}:${outcome.batch.failedCount}`,
         )
         res.status(200).json({ data: outcome })
-      } catch (error) {
-        next(error)
-      }
-    },
-  )
-
-  router.post(
-    '/batches/:batchId/return',
-    writeLimiter,
-    reauth,
-    async (req, res, next) => {
-      try {
-        const input = parseBody(reportReleaseReasonSchema, req.body)
-        const batch = await service.returnBatch(
-          { userId: requireAuth(req).user.id },
-          routeParam(req, 'batchId'),
-          input.reason,
-          auditFromRequest(req),
-        )
-        await notifyBatch(
-          'REPORT_BATCH_RETURNED',
-          'WARNING',
-          `Report batch returned to ${batch.schoolName}`,
-          batch,
-          String(batch.reviewedAt),
-        )
-        res.status(200).json({ data: { batch } })
-      } catch (error) {
-        next(error)
-      }
-    },
-  )
-
-  router.post(
-    '/batches/:batchId/hold',
-    writeLimiter,
-    reauth,
-    async (req, res, next) => {
-      try {
-        const input = parseBody(reportReleaseReasonSchema, req.body)
-        const batch = await service.hold(
-          { userId: requireAuth(req).user.id },
-          routeParam(req, 'batchId'),
-          input.reason,
-          auditFromRequest(req),
-        )
-        await notifyBatch(
-          'REPORT_BATCH_HELD',
-          'WARNING',
-          `Report batch placed on hold for ${batch.schoolName}`,
-          batch,
-          String(batch.heldAt),
-        )
-        res.status(200).json({ data: { batch } })
-      } catch (error) {
-        next(error)
-      }
-    },
-  )
-
-  router.post(
-    '/batches/:batchId/unhold',
-    writeLimiter,
-    reauth,
-    async (req, res, next) => {
-      try {
-        const batch = await service.unhold(
-          routeParam(req, 'batchId'),
-          auditFromRequest(req),
-        )
-        await notifyBatch(
-          'REPORT_BATCH_UNHELD',
-          'INFO',
-          `Report batch returned to review for ${batch.schoolName}`,
-          batch,
-          String(batch.releaseStatus),
-        )
-        res.status(200).json({ data: { batch } })
-      } catch (error) {
-        next(error)
-      }
-    },
-  )
-
-  router.post(
-    '/batches/:batchId/release',
-    writeLimiter,
-    reauth,
-    async (req, res, next) => {
-      try {
-        const batch = await service.release(
-          { userId: requireAuth(req).user.id },
-          routeParam(req, 'batchId'),
-          auditFromRequest(req),
-        )
-        await notifyBatch(
-          'REPORT_BATCH_RELEASED',
-          'SUCCESS',
-          `Reports released for ${batch.schoolName}`,
-          batch,
-          String(batch.releasedAt),
-        )
-        res.status(200).json({ data: { batch } })
       } catch (error) {
         next(error)
       }

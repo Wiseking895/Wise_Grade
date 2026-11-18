@@ -143,6 +143,11 @@ export function createAssessmentsRouter(
   const trustedOrigin = requireTrustedOrigin(trustedOrigins)
   const admin = requireRole('SCHOOL_ADMIN')
   const teacher = requireRole('CLASS_TEACHER', 'SUBJECT_TEACHER')
+  const recordsReader = requireRole(
+    'SCHOOL_ADMIN',
+    'CLASS_TEACHER',
+    'SUBJECT_TEACHER',
+  )
 
   router.use(
     '/:schoolId/assessments',
@@ -352,7 +357,7 @@ export function createAssessmentsRouter(
 
   router.get(
     '/:schoolId/assessments/class-subjects',
-    teacher,
+    recordsReader,
     async (req, res, next) => {
       try {
         const permitted =
@@ -366,7 +371,7 @@ export function createAssessmentsRouter(
     },
   )
 
-  router.get('/:schoolId/assessments/score-entry', teacher, async (req, res, next) => {
+  router.get('/:schoolId/assessments/score-entry', recordsReader, async (req, res, next) => {
     try {
       const query = parseQuery(scoreEntryQuerySchema, req.query)
       const classId = await resolveClassIdForActor(req, query.classId)
@@ -418,7 +423,7 @@ export function createAssessmentsRouter(
   // Submission tracking and review
   // -----------------------------------------------------------------------
 
-  router.get('/:schoolId/assessments/submissions', teacher, async (req, res, next) => {
+  router.get('/:schoolId/assessments/submissions', recordsReader, async (req, res, next) => {
     try {
       const access = requireAccess(req)
       const query = parseQuery(submissionQuerySchema, req.query)
@@ -442,7 +447,7 @@ export function createAssessmentsRouter(
 
   router.get(
     '/:schoolId/assessments/submissions/:submissionId',
-    teacher,
+    recordsReader,
     async (req, res, next) => {
       try {
         const access = requireAccess(req)
@@ -465,7 +470,7 @@ export function createAssessmentsRouter(
 
   router.get(
     '/:schoolId/assessments/submissions/:submissionId/reviews',
-    teacher,
+    recordsReader,
     async (req, res, next) => {
       try {
         const access = requireAccess(req)
@@ -492,7 +497,7 @@ export function createAssessmentsRouter(
 
   router.get(
     '/:schoolId/assessments/submissions/:submissionId/history',
-    teacher,
+    recordsReader,
     async (req, res, next) => {
       try {
         const access = requireAccess(req)
@@ -517,43 +522,39 @@ export function createAssessmentsRouter(
     },
   )
 
-  // Academic review is a platform responsibility. School users (including the
-  // administrator) can never accept or return teacher assessments.
+  // Academic review belongs to the school administrator. The repository still
+  // enforces school scope, submitted-state, optimistic versioning and accepted
+  // result immutability; this role guard prevents teachers from accepting their
+  // own submissions.
   router.post(
     '/:schoolId/assessments/submissions/:submissionId/review',
-    (_req, _res, next) => {
-      next(
-        new HttpError(
-          403,
-          'Academic review is performed by the Wise Grade platform, not the school workspace.',
-        ),
-      )
+    admin,
+    async (req, res, next) => {
+      try {
+        const access = requireAccess(req)
+        const input = parseBody(reviewSubmissionSchema, req.body)
+        const submission = await assessmentRepository.reviewSubmission(
+          access.schoolId,
+          routeParam(req, 'submissionId'),
+          input,
+          auditFromRequest(req),
+        )
+        res.status(200).json({ data: { submission } })
+      } catch (error) {
+        next(error)
+      }
     },
   )
 
   return router
 }
 
-function platformAuditFromRequest(req: Request): AssessmentAuditContext {
-  if (!req.auth) {
-    throw new HttpError(401, 'Authentication required')
-  }
-
-  return {
-    actorUserId: req.auth.user.id,
-    actorMembershipId: null,
-    ipAddress: req.ip ?? null,
-    userAgent: req.get('user-agent') ?? null,
-  }
-}
-
 /**
- * Platform-super-admin academic review.
+ * Platform academic submission visibility.
  *
- * The school workspace can no longer accept or return teacher assessments.
- * Wise Grade performs the authorized review before reports are prepared. Platform
- * administrators hold no school membership, so the review is recorded with a
- * null reviewer membership and an explicit platform audit entry.
+ * Academic acceptance is owned by the school administrator. The platform
+ * workspace may inspect submission history for support and audit purposes, but
+ * it can no longer accept or return teacher assessments.
  */
 export function createPlatformAssessmentsRouter(
   authRepository: AuthRepository,
@@ -634,21 +635,17 @@ export function createPlatformAssessmentsRouter(
     },
   )
 
+  // Academic acceptance belongs to the school administrator. Keeping an
+  // explicit denial here means a stale client cannot record a platform review.
   router.post(
     '/schools/:schoolId/submissions/:submissionId/review',
-    async (req, res, next) => {
-      try {
-        const input = parseBody(reviewSubmissionSchema, req.body)
-        const submission = await assessmentRepository.reviewSubmission(
-          schoolId(req),
-          routeParam(req, 'submissionId'),
-          input,
-          platformAuditFromRequest(req),
-        )
-        res.status(200).json({ data: { submission } })
-      } catch (error) {
-        next(error)
-      }
+    (_req, _res, next) => {
+      next(
+        new HttpError(
+          403,
+          'Academic review is performed by the school administrator, not the Wise Grade platform.',
+        ),
+      )
     },
   )
 

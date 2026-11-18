@@ -1873,7 +1873,7 @@ export default function ScoreEntryPage() {
         title="Submit results for review?"
         description={
           view
-            ? `All ${view.pupils.length} pupils have a complete result. Submitting saves the current register, locks it, and sends the sheet to a school administrator for internal academic review. Missing scores block submission; an explicit 0 stays a real score. This does not release report cards.`
+            ? `All ${view.pupils.length} pupils have a complete result. Submitting saves the current register, locks it, and sends the sheet to a school administrator for academic acceptance. Missing scores block submission; an explicit 0 stays a real score. Acceptance makes the result eligible for report generation but does not generate reports itself.`
             : ''
         }
         confirmLabel="Submit and lock"

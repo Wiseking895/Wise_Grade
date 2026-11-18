@@ -145,7 +145,7 @@ function workflowStubs() {
 }
 
 describe('ReportService term request', () => {
-  it('creates one term-wide request in the platform review queue', async () => {
+  it('creates one admin-accepted term-wide request ready for generation', async () => {
     const { service } = requestService()
 
     const result = await service.createRequest(
@@ -157,7 +157,7 @@ describe('ReportService term request', () => {
     expect(result.batch).toMatchObject({
       scope: 'TERM',
       status: 'PENDING',
-      releaseStatus: 'PENDING_PLATFORM_REVIEW',
+      releaseStatus: 'APPROVED',
       classId: null,
     })
     expect(result.batch.submittedAt).toBeInstanceOf(Date)
@@ -508,20 +508,23 @@ describe('ReportReleaseService request approval', () => {
 })
 
 describe('ReportWorkflowService orchestration', () => {
-  it('approval generates every class and releases on full success', async () => {
+  it('generates an accepted request and makes the completed batch available', async () => {
     const { workflow, reports, releases } = workflowStubs()
-    releases.approveRequest.mockResolvedValue(
-      requestDetail({ releaseStatus: 'APPROVED' }),
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({ releaseStatus: 'APPROVED', generationStatus: 'PENDING' }),
     )
     reports.generateIntoBatch.mockResolvedValue({
       batch: { id: 'batch-1', status: 'COMPLETED' },
       results: [{ pupilId: 'pupil-ada', status: 'GENERATED' }],
     })
     releases.release.mockResolvedValue(
-      requestDetail({ releaseStatus: 'RELEASED' }),
+      requestDetail({
+        releaseStatus: 'RELEASED',
+        generationStatus: 'COMPLETED',
+      }),
     )
 
-    const outcome = await workflow.approve(
+    const outcome = await workflow.generate(
       platformActor,
       'batch-1',
       releaseAudit,
@@ -542,23 +545,61 @@ describe('ReportWorkflowService orchestration', () => {
     expect(outcome.results).toHaveLength(1)
   })
 
-  it('does not release when generation has partial failures', async () => {
+  it('normalises a legacy review-queue request without a second academic approval', async () => {
     const { workflow, reports, releases } = workflowStubs()
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({
+        releaseStatus: 'PENDING_PLATFORM_REVIEW',
+        generationStatus: 'PENDING',
+      }),
+    )
     releases.approveRequest.mockResolvedValue(
-      requestDetail({ releaseStatus: 'APPROVED' }),
+      requestDetail({ releaseStatus: 'APPROVED', generationStatus: 'PENDING' }),
+    )
+    reports.generateIntoBatch.mockResolvedValue({
+      batch: { id: 'batch-1', status: 'COMPLETED' },
+      results: [],
+    })
+    releases.release.mockResolvedValue(
+      requestDetail({ releaseStatus: 'RELEASED', generationStatus: 'COMPLETED' }),
+    )
+
+    const outcome = await workflow.generate(
+      platformActor,
+      'batch-1',
+      releaseAudit,
+    )
+
+    expect(releases.approveRequest).toHaveBeenCalledWith(
+      platformActor,
+      'batch-1',
+      releaseAudit,
+    )
+    expect(outcome.batch.releaseStatus).toBe('RELEASED')
+  })
+
+  it('does not make reports available when generation has partial failures', async () => {
+    const { workflow, reports, releases } = workflowStubs()
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({ releaseStatus: 'APPROVED', generationStatus: 'PENDING' }),
     )
     reports.generateIntoBatch.mockResolvedValue({
       batch: { id: 'batch-1', status: 'COMPLETED_WITH_FAILURES' },
       results: [{ pupilId: 'pupil-ada', status: 'FAILED' }],
     })
-    releases.getPlatformBatch.mockResolvedValue(
-      requestDetail({
-        releaseStatus: 'APPROVED',
-        generationStatus: 'COMPLETED_WITH_FAILURES',
-      }),
-    )
+    releases.getPlatformBatch
+      .mockResolvedValueOnce(
+        requestDetail({ releaseStatus: 'APPROVED', generationStatus: 'PENDING' }),
+      )
+      .mockResolvedValueOnce(
+        requestDetail({
+          releaseStatus: 'APPROVED',
+          generationStatus: 'COMPLETED_WITH_FAILURES',
+          failedCount: 1,
+        }),
+      )
 
-    const outcome = await workflow.approve(
+    const outcome = await workflow.generate(
       platformActor,
       'batch-1',
       releaseAudit,
@@ -570,15 +611,15 @@ describe('ReportWorkflowService orchestration', () => {
 
   it('records a generation failure and rethrows', async () => {
     const { workflow, reports, releases } = workflowStubs()
-    releases.approveRequest.mockResolvedValue(
-      requestDetail({ releaseStatus: 'APPROVED' }),
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({ releaseStatus: 'APPROVED', generationStatus: 'PENDING' }),
     )
     reports.generateIntoBatch.mockRejectedValue(
       new HttpError(400, 'No accepted results.'),
     )
 
     await expect(
-      workflow.approve(platformActor, 'batch-1', releaseAudit),
+      workflow.generate(platformActor, 'batch-1', releaseAudit),
     ).rejects.toMatchObject({ statusCode: 400 })
 
     expect(reports.failBatch).toHaveBeenCalledWith(
@@ -596,30 +637,78 @@ describe('ReportWorkflowService orchestration', () => {
 
   it('never marks a batch failed when another run already owns it', async () => {
     const { workflow, reports, releases } = workflowStubs()
-    releases.approveRequest.mockResolvedValue(
-      requestDetail({ releaseStatus: 'APPROVED' }),
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({ releaseStatus: 'APPROVED', generationStatus: 'PENDING' }),
     )
     reports.generateIntoBatch.mockRejectedValue(
       new HttpError(409, 'Report generation is already running for this request.'),
     )
 
     await expect(
-      workflow.approve(platformActor, 'batch-1', releaseAudit),
+      workflow.generate(platformActor, 'batch-1', releaseAudit),
     ).rejects.toMatchObject({ statusCode: 409 })
 
     expect(reports.failBatch).not.toHaveBeenCalled()
     expect(releases.recordGenerationFailure).toHaveBeenCalled()
   })
 
-  it('refuses a duplicate approval once released', async () => {
+  it('refuses to generate an already released request', async () => {
     const { workflow, releases } = workflowStubs()
-    releases.approveRequest.mockResolvedValue(
-      requestDetail({ releaseStatus: 'RELEASED' }),
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({ releaseStatus: 'RELEASED', generationStatus: 'COMPLETED' }),
     )
 
     await expect(
-      workflow.approve(platformActor, 'batch-1', releaseAudit),
+      workflow.generate(platformActor, 'batch-1', releaseAudit),
     ).rejects.toMatchObject({ statusCode: 409 })
+  })
+
+  it('refuses to generate while another run is in progress', async () => {
+    const { workflow, releases } = workflowStubs()
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({ releaseStatus: 'APPROVED', generationStatus: 'RUNNING' }),
+    )
+
+    await expect(
+      workflow.generate(platformActor, 'batch-1', releaseAudit),
+    ).rejects.toMatchObject({ statusCode: 409 })
+  })
+
+  it('refuses to generate a request without administrator acceptance', async () => {
+    const { workflow, reports, releases } = workflowStubs()
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({ releaseStatus: 'RETURNED', generationStatus: 'PENDING' }),
+    )
+
+    await expect(
+      workflow.generate(platformActor, 'batch-1', releaseAudit),
+    ).rejects.toMatchObject({ statusCode: 409 })
+
+    expect(reports.generateIntoBatch).not.toHaveBeenCalled()
+  })
+
+  it('does not require payment records for an accepted request', async () => {
+    const { workflow, reports, releases } = workflowStubs()
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({
+        releaseStatus: 'APPROVED',
+        generationStatus: 'PENDING',
+        invoice: null,
+      }),
+    )
+    reports.generateIntoBatch.mockResolvedValue({
+      batch: { id: 'batch-1', status: 'COMPLETED' },
+      results: [],
+    })
+    releases.release.mockResolvedValue(
+      requestDetail({ releaseStatus: 'RELEASED', generationStatus: 'COMPLETED' }),
+    )
+
+    await expect(
+      workflow.generate(platformActor, 'batch-1', releaseAudit),
+    ).resolves.toMatchObject({ batch: { releaseStatus: 'RELEASED' } })
+
+    expect(reports.generateIntoBatch).toHaveBeenCalled()
   })
 
   it('retries only an approved, incomplete request', async () => {

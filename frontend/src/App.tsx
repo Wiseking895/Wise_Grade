@@ -3,6 +3,7 @@ import { AuthProvider } from './auth/AuthProvider'
 import DashboardLayout from './components/DashboardLayout'
 import PlatformLayout from './components/PlatformLayout'
 import ProtectedRoute, {
+  AssessmentRecordsRoute,
   ClassTeacherRoute,
   FullSchoolMemberRoute,
   PlatformProtectedRoute,
@@ -20,6 +21,7 @@ import PupilsPage from './pages/dashboard/PupilsPage'
 import TeacherRemarksPage from './pages/dashboard/TeacherRemarksPage'
 import ReportCardPage from './pages/dashboard/ReportCardPage'
 import ReportsPage from './pages/dashboard/ReportsPage'
+import ResultReviewPage from './pages/dashboard/ResultReviewPage'
 import SchoolProfilePage from './pages/dashboard/SchoolProfilePage'
 import ScoreEntryPage from './pages/dashboard/ScoreEntryPage'
 import SubmissionsPage from './pages/dashboard/SubmissionsPage'
@@ -28,7 +30,6 @@ import LoginPage from './pages/LoginPage'
 import NotFoundPage from './pages/NotFoundPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 import PlatformAccountPage from './pages/platform/PlatformAccountPage'
-import PlatformAssessmentsPage from './pages/platform/PlatformAssessmentsPage'
 import PlatformAuditPage from './pages/platform/PlatformAuditPage'
 import PlatformBillingPage from './pages/platform/PlatformBillingPage'
 import PlatformCalendarPage from './pages/platform/PlatformCalendarPage'
@@ -38,7 +39,6 @@ import PlatformMonitoringPage from './pages/platform/PlatformMonitoringPage'
 import PlatformNotificationsPage from './pages/platform/PlatformNotificationsPage'
 import PlatformOverviewPage from './pages/platform/PlatformOverviewPage'
 import PlatformReconciliationPage from './pages/platform/PlatformReconciliationPage'
-import PlatformReportGeneratePage from './pages/platform/PlatformReportGeneratePage'
 import PlatformReportsPage from './pages/platform/PlatformReportsPage'
 import PlatformSchoolsPage from './pages/platform/PlatformSchoolsPage'
 import PlatformSecurityPage from './pages/platform/PlatformSecurityPage'
@@ -154,9 +154,17 @@ export default function App() {
             <Route
               path="assessments/submissions"
               element={
-                <TeacherRoute>
+                <AssessmentRecordsRoute>
                   <SubmissionsPage />
-                </TeacherRoute>
+                </AssessmentRecordsRoute>
+              }
+            />
+            <Route
+              path="assessments/review"
+              element={
+                <SchoolAdminRoute>
+                  <ResultReviewPage />
+                </SchoolAdminRoute>
               }
             />
             <Route
@@ -189,15 +197,10 @@ export default function App() {
             <Route path="monitoring" element={<PlatformMonitoringPage />} />
             <Route path="health" element={<PlatformHealthPage />} />
             <Route path="notifications" element={<PlatformNotificationsPage />} />
-            <Route path="assessments" element={<PlatformAssessmentsPage />} />
             <Route path="billing" element={<PlatformBillingPage />} />
             <Route path="reconciliation" element={<PlatformReconciliationPage />} />
             <Route path="calendar" element={<PlatformCalendarPage />} />
             <Route path="reports" element={<PlatformReportsPage />} />
-            <Route
-              path="reports/generate"
-              element={<PlatformReportGeneratePage />}
-            />
             <Route path="settings" element={<PlatformSettingsPage />} />
             <Route path="security" element={<PlatformSecurityPage />} />
             <Route path="exports" element={<PlatformExportsPage />} />

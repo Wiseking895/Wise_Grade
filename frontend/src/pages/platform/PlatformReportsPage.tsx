@@ -6,7 +6,7 @@ import {
   FileText,
   RefreshCw,
   ShieldCheck,
-  XCircle,
+  TriangleAlert,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import FormField from '../../components/FormField'
@@ -21,26 +21,21 @@ import {
   PageHeader,
   Panel,
   SelectField,
-  TextareaField,
 } from '../../components/ui'
 import {
-  approvePlatformReportBatch,
   fetchPlatformReportPreview,
+  generatePlatformReportBatch,
   getPlatformReportBatch,
   getPlatformReportOverview,
   listPlatformReportBatches,
   listPlatformReportSchools,
-  rejectPlatformReportBatch,
   retryPlatformReportBatch,
 } from '../../reports/api'
 import {
   BATCH_STATUS_LABELS,
   RELEASE_STATUS_LABELS,
-  RELEASE_STATUS_SHORT_LABELS,
   batchTone,
-  releaseTone,
 } from '../../reports/labels'
-import { releaseReasonError } from '../../reports/release-logic'
 import type {
   ReportReleaseBatchSummary,
   ReportReleaseOverview,
@@ -54,7 +49,7 @@ import { usePlatformReauth } from '../../platform/reauth-context'
 import { PLATFORM_REAUTH_PURPOSE } from '../../platform/reauth-purpose'
 
 type StatusFilter = ReportReleaseStatus | ''
-type ConfirmAction = 'approve' | 'retry'
+type ConfirmAction = 'generate' | 'retry'
 
 const CLASS_STATUS_LABELS: Record<ReportRequestClassSummary['status'], string> = {
   PENDING: 'Not generated',
@@ -78,6 +73,33 @@ function classStatusTone(
     default:
       return 'neutral'
   }
+}
+
+/**
+ * Academic acceptance is owned by the school administrator. Requests only
+ * reach this queue after accepted results exist, so this label describes the
+ * source data rather than an approval action the developer performs.
+ */
+function academicReviewLabel(batch: ReportReleaseBatchSummary): string {
+  if (batch.releaseStatus === 'RETURNED') {
+    return 'Returned by school'
+  }
+
+  if (batch.releaseStatus === 'ON_HOLD') {
+    return 'Accepted · on hold'
+  }
+
+  return 'Accepted'
+}
+
+function academicReviewTone(
+  batch: ReportReleaseBatchSummary,
+): 'success' | 'warning' | 'neutral' {
+  if (batch.releaseStatus === 'RETURNED' || batch.releaseStatus === 'ON_HOLD') {
+    return 'warning'
+  }
+
+  return 'success'
 }
 
 function StatCard({
@@ -150,9 +172,6 @@ export default function PlatformReportsPage() {
   const [detailLoading, setDetailLoading] = useState(false)
 
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
-  const [rejectOpen, setRejectOpen] = useState(false)
-  const [reason, setReason] = useState('')
-  const [reasonError, setReasonError] = useState<string | null>(null)
   const [actionBusy, setActionBusy] = useState(false)
 
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -206,7 +225,7 @@ export default function PlatformReportsPage() {
       setError(
         cause instanceof Error
           ? cause.message
-          : 'Could not load the platform report queue.',
+          : 'Could not load the report request queue.',
       )
     } finally {
       setLoading(false)
@@ -314,9 +333,9 @@ export default function PlatformReportsPage() {
 
     const token = await ensureReauth(
       PLATFORM_REAUTH_PURPOSE.sensitive,
-      action === 'approve'
-        ? 'Approving generates and releases every eligible report to the school. Confirm your identity to continue.'
-        : 'Retrying generates the missing reports and releases them when complete. Confirm your identity to continue.',
+      action === 'generate'
+        ? 'Generating reports makes every eligible report available to the school. Confirm your identity to continue.'
+        : 'Retrying regenerates only the failed reports. Confirm your identity to continue.',
     )
 
     if (!token) {
@@ -325,22 +344,22 @@ export default function PlatformReportsPage() {
     }
 
     try {
-      if (action === 'approve') {
-        const outcome = await approvePlatformReportBatch(detail.id, token)
+      if (action === 'generate') {
+        const outcome = await generatePlatformReportBatch(detail.id, token)
         setNotice(
           outcome.batch.releaseStatus === 'RELEASED'
-            ? `Approved and released ${outcome.batch.reportCount} report${
+            ? `Generated ${outcome.batch.reportCount} report${
                 outcome.batch.reportCount === 1 ? '' : 's'
-              } for ${outcome.batch.schoolName}.`
-            : `Approved. ${outcome.batch.failedCount} report${
-                outcome.batch.failedCount === 1 ? '' : 's'
-              } need a retry before release.`,
+              } for ${outcome.batch.schoolName}. The school can view them now.`
+            : `Generated ${outcome.batch.generatedCount} of ${outcome.batch.requestedPupilCount} reports for ${outcome.batch.schoolName}. ${
+                outcome.batch.failedCount
+              } need a retry.`,
         )
       } else {
         const outcome = await retryPlatformReportBatch(detail.id, token)
         setNotice(
           outcome.batch.releaseStatus === 'RELEASED'
-            ? 'Retry complete. All reports are generated and released.'
+            ? 'Retry complete. All reports are generated and available to the school.'
             : `Retry finished. ${outcome.batch.failedCount} report${
                 outcome.batch.failedCount === 1 ? '' : 's'
               } still need attention.`,
@@ -360,68 +379,87 @@ export default function PlatformReportsPage() {
     }
   }
 
-  async function rejectRequest() {
-    if (!detail) return
-
-    const validation = releaseReasonError(reason)
-
-    if (validation) {
-      setReasonError(validation)
-      return
-    }
-
-    setActionBusy(true)
-    setError(null)
-    setNotice(null)
-
-    const token = await ensureReauth(
-      PLATFORM_REAUTH_PURPOSE.sensitive,
-      'Rejecting returns the request to the school with your reason. Confirm your identity to continue.',
-    )
-
-    if (!token) {
-      setActionBusy(false)
-      return
-    }
-
-    try {
-      const response = await rejectPlatformReportBatch(
-        detail.id,
-        reason.trim(),
-        token,
-      )
-      setNotice(
-        `Request rejected for ${response.batch.schoolName}. The school can resubmit after correcting the issue.`,
-      )
-      setRejectOpen(false)
-      setReason('')
-      setReasonError(null)
-      await refreshAll()
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'The report request could not be rejected.',
-      )
-    } finally {
-      setActionBusy(false)
-    }
-  }
-
   const selectedBatch =
     batches.find((batch) => batch.id === selectedBatchId) ?? null
-  const canApprove = detail?.releaseStatus === 'PENDING_PLATFORM_REVIEW'
+  const canGenerate =
+    detail?.releaseStatus === 'APPROVED' &&
+    detail.generationStatus !== 'RUNNING' &&
+    detail.generationStatus !== 'COMPLETED'
   const canRetry =
     detail?.releaseStatus === 'APPROVED' &&
     (detail.failedCount > 0 ||
       detail.generationStatus === 'COMPLETED_WITH_FAILURES' ||
       detail.generationStatus === 'FAILED')
 
+  function rowAction(batch: ReportReleaseBatchSummary) {
+    if (batch.generationStatus === 'RUNNING') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-gradely-muted">
+          <Clock3 aria-hidden="true" className="size-4" />
+          Processing
+        </span>
+      )
+    }
+
+    if (batch.releaseStatus === 'RELEASED') {
+      return (
+        <button
+          type="button"
+          onClick={() => setSelectedBatchId(batch.id)}
+          className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-gradely-navy hover:bg-gradely-navy/5"
+        >
+          <Eye aria-hidden="true" className="size-4" />
+          View outcome
+        </button>
+      )
+    }
+
+    if (
+      batch.generationStatus === 'COMPLETED_WITH_FAILURES' ||
+      batch.generationStatus === 'FAILED'
+    ) {
+      return (
+        <button
+          type="button"
+          onClick={() => setSelectedBatchId(batch.id)}
+          className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[#7a5400] hover:bg-gradely-gold/10"
+        >
+          <RefreshCw aria-hidden="true" className="size-4" />
+          Retry
+        </button>
+      )
+    }
+
+    if (batch.releaseStatus === 'APPROVED') {
+      return (
+        <button
+          type="button"
+          onClick={() => setSelectedBatchId(batch.id)}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-gradely-navy px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-gradely-navy/90"
+        >
+          <FileText aria-hidden="true" className="size-4" />
+          Generate reports
+        </button>
+      )
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={() => setSelectedBatchId(batch.id)}
+        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-gradely-navy hover:bg-gradely-navy/5"
+      >
+        <FileText aria-hidden="true" className="size-4" />
+        Inspect
+      </button>
+    )
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Report requests"
-        description="One school request covers every eligible class for a term. Approving it generates the reports and releases them to the school. Payment and invoicing are not part of this workflow."
+        description="School administrators accept academic results. Your only operational action is Generate Reports. Payment and invoicing are not part of this workflow."
         actions={
           <Button
             variant="secondary"
@@ -442,38 +480,33 @@ export default function PlatformReportsPage() {
         />
         <div>
           <p className="text-sm font-extrabold text-gradely-navy">
-            Approval generates and releases in one audited action
+            Academic acceptance happens in the school workspace
           </p>
           <p className="mt-1 text-sm leading-relaxed text-gradely-muted">
-            Every eligible class is generated into the same request batch. If
-            any report fails, the successful reports stay private and only the
-            failed pupils can be retried. No public links or storage keys are
-            exposed.
+            Every request in this queue already has administrator-accepted
+            results. Generate Reports produces every eligible class into the
+            same batch and makes fully successful reports available to the
+            school. No second approval, manual release or payment step exists.
           </p>
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-3">
         <StatCard
-          label="Pending review"
-          value={overview?.pendingReview ?? 0}
-          hint="School requests awaiting approval"
+          label="Awaiting generation"
+          value={overview?.approvedUnreleased ?? 0}
+          hint="Accepted requests ready for Generate Reports"
           emphasis
         />
         <StatCard
-          label="Approved"
-          value={overview?.approvedUnreleased ?? 0}
-          hint="Generation or retry in progress"
-        />
-        <StatCard
-          label="Released"
+          label="Generated"
           value={overview?.released ?? 0}
           hint="Available to the school"
         />
         <StatCard
-          label="Rejected"
-          value={overview?.returned ?? 0}
-          hint="Returned to the school"
+          label="Legacy review queue"
+          value={overview?.pendingReview ?? 0}
+          hint="Old requests normalised on generate"
         />
       </div>
 
@@ -493,7 +526,7 @@ export default function PlatformReportsPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-gradely-text">
-              Request queue
+              Accepted requests
             </h2>
             <p className="mt-0.5 text-xs text-gradely-muted">
               {batches.length} request{batches.length === 1 ? '' : 's'} match the
@@ -603,38 +636,35 @@ export default function PlatformReportsPage() {
       ) : batches.length === 0 ? (
         <EmptyState
           icon={FileCheck2}
-          title="No report requests in this queue"
-          description="Requests appear here when a school administrator submits one for a term. Adjust the filters to see more."
+          title="No accepted requests in this queue"
+          description="Requests appear here after a school administrator accepts the term's academic results. Adjust the filters to see more."
         />
       ) : (
         <Panel className="overflow-hidden p-0 sm:p-0">
-          <div className="border-b border-slate-200 px-5 py-4">
-            <h2 className="text-base font-bold text-gradely-text">
-              School requests
-            </h2>
-            <p className="mt-0.5 text-xs text-gradely-muted">
-              Select a request to inspect its classes and take an authorized
-              action.
-            </p>
-          </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] border-collapse text-left text-sm">
+            <table className="w-full min-w-[1040px] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-gradely-muted">
                   <th scope="col" className="px-5 py-3 font-semibold">
                     School
                   </th>
                   <th scope="col" className="px-5 py-3 font-semibold">
-                    Term / class
+                    Year
+                  </th>
+                  <th scope="col" className="px-5 py-3 font-semibold">
+                    Term
+                  </th>
+                  <th scope="col" className="px-5 py-3 font-semibold">
+                    Class
                   </th>
                   <th scope="col" className="px-5 py-3 font-semibold">
                     Pupils
                   </th>
                   <th scope="col" className="px-5 py-3 font-semibold">
-                    Generation
+                    Academic review
                   </th>
                   <th scope="col" className="px-5 py-3 font-semibold">
-                    Request state
+                    Generation
                   </th>
                   <th scope="col" className="px-5 py-3 font-semibold">
                     Submitted
@@ -654,19 +684,17 @@ export default function PlatformReportsPage() {
                         : 'hover:bg-slate-50/70'
                     }`}
                   >
-                    <td className="px-5 py-3">
-                      <p className="font-semibold text-gradely-text">
-                        {batch.schoolName}
-                      </p>
-                      <p className="text-xs text-gradely-muted">
-                        {batch.academicYearName}
-                      </p>
+                    <td className="px-5 py-3 font-semibold text-gradely-text">
+                      {batch.schoolName}
                     </td>
                     <td className="px-5 py-3 text-gradely-text">
-                      <p>{batch.academicTermName}</p>
-                      <p className="text-xs text-gradely-muted">
-                        {batch.className ?? 'All eligible classes'}
-                      </p>
+                      {batch.academicYearName}
+                    </td>
+                    <td className="px-5 py-3 text-gradely-text">
+                      {batch.academicTermName}
+                    </td>
+                    <td className="px-5 py-3 text-gradely-text">
+                      {batch.className ?? 'All eligible classes'}
                     </td>
                     <td className="px-5 py-3">
                       <p className="font-semibold text-gradely-text">
@@ -678,13 +706,13 @@ export default function PlatformReportsPage() {
                       </p>
                     </td>
                     <td className="px-5 py-3">
-                      <Badge tone={batchTone(batch.generationStatus)}>
-                        {BATCH_STATUS_LABELS[batch.generationStatus]}
+                      <Badge tone={academicReviewTone(batch)}>
+                        {academicReviewLabel(batch)}
                       </Badge>
                     </td>
                     <td className="px-5 py-3">
-                      <Badge tone={releaseTone(batch.releaseStatus)}>
-                        {RELEASE_STATUS_SHORT_LABELS[batch.releaseStatus]}
+                      <Badge tone={batchTone(batch.generationStatus)}>
+                        {BATCH_STATUS_LABELS[batch.generationStatus]}
                       </Badge>
                     </td>
                     <td className="px-5 py-3 text-xs text-gradely-muted">
@@ -693,14 +721,7 @@ export default function PlatformReportsPage() {
                         : 'Not submitted'}
                     </td>
                     <td className="px-5 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedBatchId(batch.id)}
-                        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-gradely-navy hover:bg-gradely-navy/5"
-                      >
-                        <FileText aria-hidden="true" className="size-4" />
-                        Inspect
-                      </button>
+                      {rowAction(batch)}
                     </td>
                   </tr>
                 ))}
@@ -720,12 +741,12 @@ export default function PlatformReportsPage() {
                 <h2 className="text-lg font-extrabold text-gradely-text">
                   {detail.schoolName}
                 </h2>
-                <Badge tone={releaseTone(detail.releaseStatus)}>
-                  {RELEASE_STATUS_LABELS[detail.releaseStatus]}
-                </Badge>
                 <Badge tone={batchTone(detail.generationStatus)}>
                   {BATCH_STATUS_LABELS[detail.generationStatus]}
                 </Badge>
+                {detail.releaseStatus === 'RELEASED' ? (
+                  <Badge tone="success">Generated</Badge>
+                ) : null}
               </div>
               <p className="mt-1 text-sm text-gradely-muted">
                 {detail.academicYearName} · {detail.academicTermName} ·{' '}
@@ -766,36 +787,39 @@ export default function PlatformReportsPage() {
           {detail.releaseStatus === 'RELEASED' ? (
             <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-[#137026]">
               <CheckCircle2 aria-hidden="true" className="size-4" />
-              Released. The school can preview, print and download the reports.
+              Generated. The school can preview, print and download every report.
             </p>
-          ) : detail.releaseStatus === 'PENDING_PLATFORM_REVIEW' ? (
+          ) : detail.generationStatus === 'RUNNING' ? (
             <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-gradely-navy">
               <Clock3 aria-hidden="true" className="size-4" />
-              Awaiting your approval. Approving generates every eligible class
-              and releases the completed request.
+              Generation is running. This request is locked until it finishes.
+            </p>
+          ) : detail.failedCount > 0 ||
+            detail.generationStatus === 'COMPLETED_WITH_FAILURES' ||
+            detail.generationStatus === 'FAILED' ? (
+            <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-[#7a5400]">
+              <TriangleAlert aria-hidden="true" className="size-4" />
+              {detail.generatedCount} of {detail.requestedPupilCount} reports
+              generated. Only the failed pupils can be retried; successful
+              reports are never duplicated.
             </p>
           ) : detail.releaseStatus === 'APPROVED' ? (
-            <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-[#7a5400]">
-              <Clock3 aria-hidden="true" className="size-4" />
-              Approved. {detail.generatedCount} of{' '}
-              {detail.requestedPupilCount} reports generated
-              {detail.failedCount > 0
-                ? ` · ${detail.failedCount} failed and retryable`
-                : ''}
-              .
+            <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-gradely-navy">
+              <FileText aria-hidden="true" className="size-4" />
+              Accepted by the school administrator and ready for generation.
             </p>
           ) : null}
 
           {detail.returnedReason ? (
             <p className="mt-3 rounded-lg bg-gradely-gold/10 px-3 py-2 text-xs font-semibold text-[#7a5400]">
-              Rejection reason: {detail.returnedReason}
+              Returned reason: {detail.returnedReason}
             </p>
           ) : null}
 
           <div className="mt-5 grid gap-4 lg:grid-cols-2">
             <div className="rounded-xl border border-slate-200 p-4">
               <h3 className="text-sm font-bold text-gradely-text">
-                Review trail
+                Outcome trail
               </h3>
               <dl className="mt-3 space-y-2 text-xs">
                 <div className="flex justify-between gap-3">
@@ -811,27 +835,17 @@ export default function PlatformReportsPage() {
                   </dd>
                 </div>
                 <div className="flex justify-between gap-3">
-                  <dt className="text-gradely-muted">Reviewed</dt>
+                  <dt className="text-gradely-muted">Generated</dt>
                   <dd className="text-right font-semibold text-gradely-text">
-                    {detail.reviewedAt
-                      ? `${formatDateTime(detail.reviewedAt)}${
-                          detail.reviewedByName
-                            ? ` · ${detail.reviewedByName}`
-                            : ''
-                        }`
-                      : 'Not reviewed'}
+                    {detail.generatedCount} / {detail.requestedPupilCount}
                   </dd>
                 </div>
                 <div className="flex justify-between gap-3">
-                  <dt className="text-gradely-muted">Released</dt>
+                  <dt className="text-gradely-muted">Completed</dt>
                   <dd className="text-right font-semibold text-gradely-text">
-                    {detail.releasedAt
-                      ? `${formatDateTime(detail.releasedAt)}${
-                          detail.releasedByName
-                            ? ` · ${detail.releasedByName}`
-                            : ''
-                        }`
-                      : 'Not released'}
+                    {detail.completedAt
+                      ? formatDateTime(detail.completedAt)
+                      : 'Not completed'}
                   </dd>
                 </div>
               </dl>
@@ -909,24 +923,11 @@ export default function PlatformReportsPage() {
           <div className="mt-5 flex flex-wrap items-center gap-2">
             <Button
               size="sm"
-              disabled={!canApprove || actionBusy}
-              onClick={() => setConfirmAction('approve')}
+              disabled={!canGenerate || actionBusy}
+              onClick={() => setConfirmAction('generate')}
             >
-              <CheckCircle2 aria-hidden="true" className="size-4" />
-              Approve &amp; generate
-            </Button>
-            <Button
-              size="sm"
-              variant="danger"
-              disabled={!canApprove || actionBusy}
-              onClick={() => {
-                setReason('')
-                setReasonError(null)
-                setRejectOpen(true)
-              }}
-            >
-              <XCircle aria-hidden="true" className="size-4" />
-              Reject request
+              <FileText aria-hidden="true" className="size-4" />
+              Generate Reports
             </Button>
             <Button
               size="sm"
@@ -940,7 +941,7 @@ export default function PlatformReportsPage() {
             {detail.releaseStatus === 'RELEASED' ? (
               <p className="flex items-center gap-2 text-sm font-semibold text-[#137026]">
                 <ShieldCheck aria-hidden="true" className="size-4" />
-                Released. No further platform action is available.
+                Complete. No further platform action is required.
               </p>
             ) : null}
           </div>
@@ -1047,61 +1048,20 @@ export default function PlatformReportsPage() {
         )}
       </Modal>
 
-      <Modal
-        open={rejectOpen}
-        onClose={() => {
-          if (actionBusy) return
-          setRejectOpen(false)
-          setReasonError(null)
-        }}
-        title="Reject this report request"
-        description="The reason is recorded in the audit trail and shown to the school. The school can submit a fresh request after correcting the issue."
-      >
-        <TextareaField
-          label="Reason"
-          value={reason}
-          onChange={(event) => setReason(event.target.value)}
-          rows={4}
-          maxLength={1000}
-          error={reasonError ?? undefined}
-          hint="At least 3 characters and no more than 1000 characters."
-          disabled={actionBusy}
-        />
-        <div className="mt-5 flex flex-wrap justify-end gap-2">
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setRejectOpen(false)
-              setReasonError(null)
-            }}
-            disabled={actionBusy}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="danger"
-            onClick={() => void rejectRequest()}
-            loading={actionBusy}
-          >
-            Reject request
-          </Button>
-        </div>
-      </Modal>
-
       <ConfirmDialog
         open={confirmAction !== null}
         title={
-          confirmAction === 'approve'
-            ? 'Approve, generate and release this request?'
+          confirmAction === 'generate'
+            ? 'Generate reports for this accepted request?'
             : 'Retry the failed reports?'
         }
         description={
-          confirmAction === 'approve'
-            ? 'This single action approves the request, generates every eligible class and releases the completed reports to the school. If any report fails, the successful reports stay private until the failures are retried.'
-            : 'Only the pupils that failed are regenerated into the same request batch. Successful reports are never duplicated. The request is released automatically if every report succeeds.'
+          confirmAction === 'generate'
+            ? 'Every eligible class is generated into the same request batch. Fully successful reports become available to the school automatically. If any report fails, successful reports stay private until the failures are retried.'
+            : 'Only the pupils that failed are regenerated into the same request batch. Successful reports are never duplicated. The request is made available automatically if every report succeeds.'
         }
         confirmLabel={
-          confirmAction === 'approve' ? 'Approve & generate' : 'Retry reports'
+          confirmAction === 'generate' ? 'Generate Reports' : 'Retry reports'
         }
         busy={actionBusy}
         onConfirm={() => {

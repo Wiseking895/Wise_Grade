@@ -22,7 +22,7 @@ describe('platform dashboard navigation', () => {
       'Overview',
       'Schools',
       'Payments',
-      'Reports & release',
+      'Report requests',
       'Academic calendar',
       'Academic monitoring',
       'Platform settings',
@@ -80,13 +80,18 @@ describe('platform dashboard safety', () => {
     assert.doesNotMatch(audit, /method: 'DELETE'/)
   })
 
-  it('states that academic acceptance is not report release', async () => {
+  it('separates school academic acceptance from platform generation', async () => {
     const monitoring = await source(
       '../src/pages/platform/PlatformMonitoringPage.tsx',
     )
 
-    assert.match(monitoring, /Academic acceptance ≠ release/)
-    assert.match(monitoring, /Unverified payments block release/)
+    assert.match(monitoring, /School administrators accept results/)
+    assert.match(monitoring, /Generate Reports is one audited action/)
+    assert.doesNotMatch(monitoring, /Unverified payments block release/)
+    assert.doesNotMatch(monitoring, /Reports awaiting payment/)
+    assert.doesNotMatch(monitoring, /Payments awaiting verification/)
+    assert.doesNotMatch(monitoring, /Academic review/)
+    assert.doesNotMatch(monitoring, /\/platform\/assessments/)
   })
 
   it('renders platform school logos through the authenticated asset URL helper', async () => {

@@ -413,6 +413,17 @@ export class FakeReportRepository implements ReportRepository {
       throw new HttpError(404, 'Report generation batch not found')
     }
 
+    if (
+      batch.status !== 'PENDING' &&
+      batch.status !== 'FAILED' &&
+      batch.status !== 'COMPLETED_WITH_FAILURES'
+    ) {
+      throw new HttpError(
+        409,
+        'Report generation is already running or this request has already been generated.',
+      )
+    }
+
     batch.status = 'RUNNING'
     batch.startedAt = new Date()
   }

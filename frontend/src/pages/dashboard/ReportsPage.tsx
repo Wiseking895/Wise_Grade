@@ -211,7 +211,7 @@ export default function ReportsPage() {
   }, [loadWorkspace])
 
   const currentRequest = requestDetail?.batch ?? null
-  const awaitingReview =
+  const awaitingGeneration =
     currentRequest?.releaseStatus === 'PENDING_PLATFORM_REVIEW'
   const requestInFlight =
     currentRequest?.releaseStatus === 'PENDING_PLATFORM_REVIEW' ||
@@ -233,7 +233,7 @@ export default function ReportsPage() {
       setNotice(
         `Report request submitted for ${result.classes.length} class${
           result.classes.length === 1 ? '' : 'es'
-        }. The platform super administrator will review it.`,
+        }. The Wise Grade platform will generate the reports.`,
       )
       await loadWorkspace()
     } catch (cause) {
@@ -349,7 +349,7 @@ export default function ReportsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Term reports"
-        description="Submit one report request for the term. The Wise Grade platform super administrator reviews it, generates every eligible class and releases the reports back to this school."
+        description="Submit one report request for the term once the school administrator has accepted the results. The Wise Grade platform generates every eligible class and the completed reports become available to this school."
         actions={headerActions}
       />
 
@@ -372,10 +372,10 @@ export default function ReportsPage() {
           </SelectField>
 
           <SelectField
-            label="Released class filter"
+            label="Class filter"
             value={classId}
             onChange={(event) => setClassId(event.target.value)}
-            hint="Filter the released report cards below. Selecting a class also enables a printable class collection."
+            hint="Filter the available report cards below. Selecting a class also enables a printable class collection."
           >
             <option value="">All classes</option>
             {classes.map((item) => (
@@ -463,10 +463,10 @@ export default function ReportsPage() {
             </div>
           </div>
 
-          {awaitingReview ? (
+          {awaitingGeneration ? (
             <p className="mt-4 rounded-xl bg-gradely-blue/5 px-4 py-3 text-sm font-semibold text-gradely-navy">
-              Awaiting platform review. No report PDFs are available until the
-              platform approves and generates them.
+              Awaiting platform generation. No report PDFs are available until
+              the platform generates them.
             </p>
           ) : null}
 
@@ -474,7 +474,7 @@ export default function ReportsPage() {
             <div className="mt-4 rounded-xl border border-gradely-gold/30 bg-gradely-gold/10 p-4">
               <p className="flex items-center gap-2 text-sm font-bold text-[#6b4a00]">
                 <XCircle aria-hidden="true" className="size-4" />
-                Request rejected by the platform
+                Request returned earlier
               </p>
               <p className="mt-1 text-sm leading-relaxed text-[#7a5400]">
                 {currentRequest.returnedReason ??
@@ -502,7 +502,7 @@ export default function ReportsPage() {
           {currentRequest.releaseStatus === 'RELEASED' ? (
             <p className="mt-4 flex items-center gap-2 rounded-xl bg-gradely-green/10 px-4 py-3 text-sm font-semibold text-[#137026]">
               <CheckCircle2 aria-hidden="true" className="size-4" />
-              Reports released. You can preview, print and download them below.
+              Reports are ready. You can preview, print and download them below.
             </p>
           ) : null}
 
@@ -574,7 +574,7 @@ export default function ReportsPage() {
         <EmptyState
           icon={Send}
           title="No report request for this term"
-          description="Submit one term-wide request when academic results have been reviewed and accepted. The platform super administrator then approves, generates and releases the reports."
+          description="Submit one term-wide request when the school administrator has accepted the academic results. The platform then generates the reports for every eligible class."
         />
       )}
 
@@ -582,11 +582,11 @@ export default function ReportsPage() {
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
           <div>
             <h2 className="text-base font-bold text-gradely-text">
-              Released reports
+              Generated reports
             </h2>
             <p className="mt-0.5 text-xs text-gradely-muted">
               {cards.length} report card{cards.length === 1 ? '' : 's'} ·
-              preview, print or download only after release
+              preview, print or download once generated
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -609,14 +609,14 @@ export default function ReportsPage() {
 
         {loading || termsLoading ? (
           <div className="p-5">
-            <LoadingPanel label="Loading released reports…" />
+            <LoadingPanel label="Loading generated reports…" />
           </div>
         ) : cards.length === 0 ? (
           <div className="p-5">
             <EmptyState
               icon={FileText}
-              title="No released reports yet"
-              description="Report cards appear here only after the platform has generated and released them for this term."
+              title="No generated reports yet"
+              description="Report cards appear here after the platform has generated them for this term."
             />
           </div>
         ) : (

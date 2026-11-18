@@ -100,13 +100,13 @@ export default function PlatformOverviewPage() {
             <StatCard
               label="Reports prepared"
               value={overview.reports.prepared}
-              hint={`${overview.reports.awaitingApproval} awaiting platform approval`}
+              hint={`${overview.reports.awaitingApproval} awaiting platform generation`}
               icon={<FileCheck2 aria-hidden="true" className="size-5" />}
             />
             <StatCard
               label="Reports released"
               value={overview.reports.released}
-              hint={`${overview.reports.approvedAwaitingRelease} approved awaiting release · ${overview.reports.onHold} on hold`}
+              hint={`${overview.reports.approvedAwaitingRelease} awaiting generation · ${overview.reports.onHold} on hold`}
               tone="success"
               icon={<FileCheck2 aria-hidden="true" className="size-5" />}
             />

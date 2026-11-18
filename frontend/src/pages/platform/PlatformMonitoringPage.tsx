@@ -3,9 +3,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock,
-  FileCheck2,
   FileWarning,
-  ReceiptText,
   RefreshCw,
   Send,
   Timer,
@@ -46,44 +44,23 @@ const BUCKETS: BucketDefinition[] = [
   },
   {
     key: 'awaitingReview',
-    title: 'Awaiting academic review',
-    description: 'Submitted results waiting for a platform review decision.',
+    title: 'Awaiting school review',
+    description: 'Submitted results waiting for the school administrator.',
     icon: <Send aria-hidden="true" className="size-5" />,
     tone: 'info',
   },
   {
     key: 'returnedForCorrection',
     title: 'Returned for correction',
-    description: 'Results returned to the school for correction.',
+    description: 'Results returned to the teacher for correction.',
     icon: <FileWarning aria-hidden="true" className="size-5" />,
     tone: 'danger',
   },
   {
     key: 'acceptedAwaitingReports',
     title: 'Accepted, awaiting reports',
-    description: 'Academic acceptance does not prepare or release reports.',
+    description: 'Administrator-accepted results ready for report generation.',
     icon: <CheckCircle2 aria-hidden="true" className="size-5" />,
-    tone: 'info',
-  },
-  {
-    key: 'reportsAwaitingPayment',
-    title: 'Reports awaiting payment',
-    description: 'Approved reports blocked by an unpaid term invoice.',
-    icon: <ReceiptText aria-hidden="true" className="size-5" />,
-    tone: 'warning',
-  },
-  {
-    key: 'paymentsAwaitingVerification',
-    title: 'Payments awaiting verification',
-    description: 'Unverified payments never qualify a report for release.',
-    icon: <ReceiptText aria-hidden="true" className="size-5" />,
-    tone: 'warning',
-  },
-  {
-    key: 'reportsAwaitingRelease',
-    title: 'Paid and awaiting release',
-    description: 'Verified payment and platform approval recorded; release pending.',
-    icon: <FileCheck2 aria-hidden="true" className="size-5" />,
     tone: 'success',
   },
   {
@@ -211,7 +188,7 @@ export default function PlatformMonitoringPage() {
     <div className="space-y-6">
       <PageHeader
         title="Academic monitoring"
-        description="Cross-school view of result entry, academic review, payment verification and report release. Each stage stays separate."
+        description="Cross-school view of result entry, school academic review and report readiness. Academic acceptance happens in the school workspace; report generation happens on the platform."
         actions={
           <Button variant="secondary" onClick={() => void load()} loading={loading}>
             <RefreshCw aria-hidden="true" className="size-4" />
@@ -243,19 +220,10 @@ export default function PlatformMonitoringPage() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <Link
-                  to="/platform/assessments"
-                  className="text-sm font-semibold text-gradely-navy underline decoration-gradely-blue/40 underline-offset-2 hover:text-gradely-blue"
-                >
-                  Academic review
-                </Link>
-                <span aria-hidden="true" className="text-gradely-muted">
-                  ·
-                </span>
-                <Link
                   to="/platform/reports"
                   className="text-sm font-semibold text-gradely-navy underline decoration-gradely-blue/40 underline-offset-2 hover:text-gradely-blue"
                 >
-                  Reports &amp; release
+                  Report requests
                 </Link>
                 <span aria-hidden="true" className="text-gradely-muted">
                   ·
@@ -264,18 +232,18 @@ export default function PlatformMonitoringPage() {
                   to="/platform/billing"
                   className="text-sm font-semibold text-gradely-navy underline decoration-gradely-blue/40 underline-offset-2 hover:text-gradely-blue"
                 >
-                  Payments
+                  Billing records
                 </Link>
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <Badge tone="info">
                 <Clock aria-hidden="true" className="mr-1 size-3.5" />
-                Academic acceptance ≠ release
+                School administrators accept results
               </Badge>
-              <Badge tone="warning">
-                <ReceiptText aria-hidden="true" className="mr-1 size-3.5" />
-                Unverified payments block release
+              <Badge tone="success">
+                <CheckCircle2 aria-hidden="true" className="mr-1 size-3.5" />
+                Generate Reports is one audited action
               </Badge>
             </div>
           </Panel>

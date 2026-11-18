@@ -420,28 +420,17 @@ export function fetchPlatformReportPreview(
   )
 }
 
-function platformAction(
-  batchId: string,
-  action: 'approve' | 'return' | 'hold' | 'unhold' | 'release',
-  body: { reason?: string } = {},
-  reauthToken?: string,
-) {
-  return apiRequest<{ batch: ReportReleaseBatchDetail }>(
-    `/api/platform/reports/batches/${batchId}/${action}`,
-    {
-      method: 'POST',
-      body,
-      headers: reauthToken ? { 'X-Platform-Reauth': reauthToken } : undefined,
-    },
-  )
-}
-
-export function approvePlatformReportBatch(
+/**
+ * The developer's single operational action for an admin-accepted request.
+ * Academic acceptance has already happened in the school workspace, so this
+ * action only generates reports. Payment is never part of this call.
+ */
+export function generatePlatformReportBatch(
   batchId: string,
   reauthToken?: string,
 ) {
   return apiRequest<ReportRequestActionResult>(
-    `/api/platform/reports/batches/${batchId}/approve`,
+    `/api/platform/reports/batches/${batchId}/generate`,
     {
       method: 'POST',
       body: {},
@@ -450,21 +439,10 @@ export function approvePlatformReportBatch(
   )
 }
 
-export function rejectPlatformReportBatch(
-  batchId: string,
-  reason: string,
-  reauthToken?: string,
-) {
-  return apiRequest<{ batch: ReportRequestDetail }>(
-    `/api/platform/reports/batches/${batchId}/reject`,
-    {
-      method: 'POST',
-      body: { reason },
-      headers: reauthToken ? { 'X-Platform-Reauth': reauthToken } : undefined,
-    },
-  )
-}
-
+/**
+ * Retries only pupils whose first generation attempt failed. Successful report
+ * versions are never regenerated or duplicated.
+ */
 export function retryPlatformReportBatch(
   batchId: string,
   reauthToken?: string,
@@ -478,43 +456,6 @@ export function retryPlatformReportBatch(
     },
   )
 }
-
-export function returnPlatformReportBatch(
-  batchId: string,
-  reason: string,
-  reauthToken?: string,
-) {
-  return platformAction(batchId, 'return', { reason }, reauthToken)
-}
-
-export function holdPlatformReportBatch(
-  batchId: string,
-  reason: string,
-  reauthToken?: string,
-) {
-  return platformAction(batchId, 'hold', { reason }, reauthToken)
-}
-
-export function unholdPlatformReportBatch(
-  batchId: string,
-  reauthToken?: string,
-) {
-  return platformAction(batchId, 'unhold', {}, reauthToken)
-}
-
-export function releasePlatformReportBatch(
-  batchId: string,
-  reauthToken?: string,
-) {
-  return platformAction(batchId, 'release', {}, reauthToken)
-}
-
-export type PlatformReportAction =
-  | 'approve'
-  | 'return'
-  | 'hold'
-  | 'unhold'
-  | 'release'
 
 export const PLATFORM_REPORT_STATUS_FILTERS: ReportReleaseStatus[] = [
   'GENERATED',

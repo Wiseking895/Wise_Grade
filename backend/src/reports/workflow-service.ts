@@ -38,14 +38,15 @@ export interface ReportRequestWorkflowOptions {
 }
 
 /**
- * Temporary Term 1 report workflow.
+ * Report-generation workflow.
  *
- * Academic acceptance remains in the assessment workspace. A school
- * administrator then submits one term-wide request. A platform super
- * administrator approves it, which generates every eligible class and releases
- * the completed batch to the school. Payment and invoicing are deliberately not
- * part of this orchestration; the billing services and historical rows remain
- * untouched.
+ * Academic acceptance happens in the school assessment workspace and belongs to
+ * the school administrator. A school administrator then submits one term-wide
+ * generation request. The platform super administrator has a single operational
+ * action for an accepted request: Generate Reports. Generation consumes only
+ * accepted results and the completed batch is made available automatically, so
+ * there is no separate platform approval or manual release step. Payment is not
+ * part of this orchestration; billing services and historical rows are untouched.
  */
 export class ReportWorkflowService {
   private readonly reports: ReportService
@@ -100,44 +101,63 @@ export class ReportWorkflowService {
   }
 
   /**
-   * One platform approval action: validate, audit the approval, generate every
-   * eligible class into the same request batch, then release the batch only when
-   * every required report succeeded.
+   * The developer's only operational action for an accepted request.
+   *
+   * A request created from accepted results is already APPROVED for generation.
+   * Legacy requests queued in PENDING_PLATFORM_REVIEW are normalised
+   * automatically as part of this action; the developer never performs a second
+   * academic approval. The generated batch is made available to the school as
+   * soon as every required report succeeds.
    */
-  async approve(
+  async generate(
     actor: PlatformReportActor,
     batchId: string,
     audit: ReportReleaseAuditContext,
   ): Promise<ReportRequestActionResult> {
-    const approved = await this.releases.approveRequest(actor, batchId, audit)
+    let detail = await this.releases.getPlatformBatch(batchId)
 
-    if (approved.releaseStatus === 'RELEASED') {
-      throw new HttpError(409, 'This request has already been released.')
+    if (detail.generationStatus === 'RUNNING') {
+      throw new HttpError(
+        409,
+        'Report generation is already running for this request.',
+      )
     }
 
-    return this.generateAndRelease(actor, approved, audit, false)
-  }
+    if (detail.releaseStatus === 'RELEASED') {
+      throw new HttpError(
+        409,
+        'Reports have already been generated and made available.',
+      )
+    }
 
-  async reject(
-    actor: PlatformReportActor,
-    batchId: string,
-    reason: string,
-    audit: ReportReleaseAuditContext,
-  ): Promise<ReportRequestDetail> {
-    const rejected = await this.releases.rejectRequest(
-      actor,
-      batchId,
-      reason,
-      audit,
-    )
+    if (detail.releaseStatus === 'ON_HOLD') {
+      throw new HttpError(
+        409,
+        'This request is on hold and cannot be generated.',
+      )
+    }
 
-    return this.withClasses(rejected)
+    // Older requests were queued for platform review before academic acceptance
+    // moved to the school administrator. They were created only after accepted
+    // results existed, so normalise them without asking the developer to approve
+    // academic scores again.
+    if (detail.releaseStatus === 'PENDING_PLATFORM_REVIEW') {
+      detail = await this.releases.approveRequest(actor, batchId, audit)
+    }
+
+    if (detail.releaseStatus !== 'APPROVED') {
+      throw new HttpError(
+        409,
+        'This request is not eligible for report generation. Academic results must be accepted by the school administrator first.',
+      )
+    }
+
+    return this.generateAndRelease(actor, detail, audit, false)
   }
 
   /**
-   * Retries only the pupils that failed. Initial generation failures are retried
-   * as a full run because the batch has no linked versions yet. Successful
-   * versions are never regenerated or duplicated.
+   * Retries only the pupils that failed. Successful versions are never
+   * regenerated or duplicated.
    */
   async retry(
     actor: PlatformReportActor,
@@ -149,7 +169,7 @@ export class ReportWorkflowService {
     if (detail.releaseStatus !== 'APPROVED') {
       throw new HttpError(
         409,
-        'Only an approved request with pending generation can be retried.',
+        'Only an accepted request with pending generation can be retried.',
       )
     }
 
@@ -170,7 +190,7 @@ export class ReportWorkflowService {
     retry: boolean,
   ): Promise<ReportRequestActionResult> {
     // A legacy batch may already have been generated before the request
-    // workflow existed. Approval then only needs the release step.
+    // workflow existed. It only needs the automatic release step.
     if (detail.generationStatus === 'COMPLETED' && detail.reportCount > 0) {
       const released = await this.releases.release(actor, detail.id, audit)
       return {

@@ -255,13 +255,15 @@ describe('school role separation', () => {
     assert.match(schoolPage, /Request term reports/)
     assert.match(schoolPage, /Download class collection/)
 
-    // Platform approval, rejection and retry are the only actions; there is no
-    // payment, invoice or reconciliation step in the active workflow.
-    assert.match(platformPage, /approvePlatformReportBatch/)
-    assert.match(platformPage, /rejectPlatformReportBatch/)
+    // Platform generation and retry are the only operational actions; there is
+    // no platform academic approval, manual release or payment step.
+    assert.match(platformPage, /generatePlatformReportBatch/)
     assert.match(platformPage, /retryPlatformReportBatch/)
+    assert.match(platformPage, /Generate Reports/)
     assert.doesNotMatch(platformPage, /verifyPayment|paymentReference|invoiceId/)
     assert.doesNotMatch(platformPage, /paidMinor|outstandingMinor|INVOICE_/)
+    assert.doesNotMatch(platformPage, /approvePlatformReportBatch/)
+    assert.doesNotMatch(platformPage, /rejectPlatformReportBatch/)
     assert.doesNotMatch(platformPage, /releasePlatformReportBatch/)
     assert.doesNotMatch(platformPage, /queuePlatformReportBatch/)
     assert.doesNotMatch(platformPage, /holdPlatformReportBatch/)
@@ -270,8 +272,11 @@ describe('school role separation', () => {
 
     assert.match(api, /export function fetchClassCollection/)
     assert.match(api, /export function submitReportRequest/)
-    assert.match(api, /export function rejectPlatformReportBatch/)
+    assert.match(api, /export function generatePlatformReportBatch/)
     assert.match(api, /export function retryPlatformReportBatch/)
+    assert.doesNotMatch(api, /export function approvePlatformReportBatch/)
+    assert.doesNotMatch(api, /export function rejectPlatformReportBatch/)
+    assert.doesNotMatch(api, /export function releasePlatformReportBatch/)
   })
 
   it('hides the four requested sections from the administrator overview only', async () => {
@@ -323,5 +328,35 @@ describe('school role separation', () => {
     assert.match(teachers, /Active assignments/)
     assert.match(teachers, /registerClassWithTeacher/)
     assert.match(calendar, /Academic years and terms/)
+  })
+
+  it('gives school administrators academic review and removes it from the platform', async () => {
+    const layout = await source('../src/components/DashboardLayout.tsx')
+    const platformLayout = await source('../src/components/PlatformLayout.tsx')
+    const app = await source('../src/App.tsx')
+
+    // The school administrator owns acceptance; teachers can view submissions
+    // but never see the review queue.
+    assert.match(
+      layout,
+      /to: '\/dashboard\/assessments\/review'[\s\S]{0,120}roles: ADMIN_ROLES/,
+    )
+    assert.match(
+      layout,
+      /to: '\/dashboard\/assessments\/submissions'[\s\S]{0,140}'SCHOOL_ADMIN'/,
+    )
+    assert.match(
+      app,
+      /path="assessments\/review"[\s\S]{0,220}<SchoolAdminRoute>/,
+    )
+
+    // The platform console exposes accepted requests and one Generate Reports
+    // action, with no academic-review or separate generate screen.
+    assert.match(platformLayout, /Report requests/)
+    assert.doesNotMatch(platformLayout, /Academic review/)
+    assert.doesNotMatch(platformLayout, /Generate reports/)
+    assert.doesNotMatch(platformLayout, /Reports & release/)
+    assert.doesNotMatch(app, /path="assessments" element=\{<PlatformAssessmentsPage/)
+    assert.doesNotMatch(app, /path="reports\/generate"/)
   })
 })

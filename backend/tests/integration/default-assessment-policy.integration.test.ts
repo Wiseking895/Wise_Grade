@@ -1145,9 +1145,9 @@ describe.skipIf(!runIntegration)(
       }>(submitted).submission
       expect(submittedData.status).toBe('SUBMITTED')
 
-      const accepted = await platform
+      const accepted = await admin
         .post(
-          `/api/platform/assessments/schools/${primary.schoolId}/submissions/${submittedData.id}/review`,
+          `/api/schools/${primary.schoolId}/assessments/submissions/${submittedData.id}/review`,
         )
         .set('Origin', TEST_ORIGIN)
         .send({

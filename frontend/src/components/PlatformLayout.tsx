@@ -3,11 +3,9 @@ import {
   Bell,
   Building2,
   CalendarDays,
-  ClipboardCheck,
   Download,
   FileCheck2,
   FileClock,
-  FilePlus2,
   HeartPulse,
   LayoutDashboard,
   LogOut,
@@ -51,9 +49,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Academics',
     items: [
-      { to: '/platform/assessments', label: 'Academic review', icon: ClipboardCheck },
-      { to: '/platform/reports/generate', label: 'Generate reports', icon: FilePlus2 },
-      { to: '/platform/reports', label: 'Reports & release', icon: FileCheck2 },
+      { to: '/platform/reports', label: 'Report requests', icon: FileCheck2 },
       { to: '/platform/calendar', label: 'Academic calendar', icon: CalendarDays },
     ],
   },
@@ -87,7 +83,7 @@ const PAGE_HEADINGS: Record<string, { title: string; subtitle: string }> = {
   },
   '/platform/monitoring': {
     title: 'Academic monitoring',
-    subtitle: 'Result entry, review, payment and release status',
+    subtitle: 'Result entry, school academic review and report readiness',
   },
   '/platform/health': {
     title: 'Platform health',
@@ -97,17 +93,9 @@ const PAGE_HEADINGS: Record<string, { title: string; subtitle: string }> = {
     title: 'Notifications',
     subtitle: 'Operational inbox with read state and school references',
   },
-  '/platform/assessments': {
-    title: 'Academic review',
-    subtitle: 'Authorized review of submitted school results',
-  },
-  '/platform/reports/generate': {
-    title: 'Generate reports',
-    subtitle: 'Eligibility checks and platform report preparation',
-  },
   '/platform/reports': {
-    title: 'Reports & release',
-    subtitle: 'Platform approval, holds and controlled release',
+    title: 'Report requests',
+    subtitle: 'Administrator-accepted requests and report generation',
   },
   '/platform/calendar': {
     title: 'Academic calendar',
