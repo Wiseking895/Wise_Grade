@@ -1,4 +1,9 @@
-import { ApiError, apiRequest } from '../lib/api'
+import {
+  API_BASE_URL,
+  API_CONFIGURATION_ERROR,
+  ApiError,
+  apiRequest,
+} from '../lib/api'
 import type {
   BillingAuditRecord,
   BillingSchoolScope,
@@ -17,10 +22,6 @@ import type {
   SchoolInvoicesResult,
 } from './types'
 
-const API_URL = (
-  import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
-).replace(/\/+$/, '')
-
 function queryString(values: Record<string, string | undefined>): string {
   const params = new URLSearchParams()
 
@@ -36,10 +37,14 @@ function schoolPath(schoolId: string, suffix = ''): string {
 }
 
 async function fetchPrivateBlob(path: string, accept: string): Promise<Blob> {
+  if (API_CONFIGURATION_ERROR) {
+    throw new ApiError(0, API_CONFIGURATION_ERROR)
+  }
+
   let response: Response
 
   try {
-    response = await fetch(`${API_URL}${path}`, {
+    response = await fetch(`${API_BASE_URL}${path}`, {
       credentials: 'include',
       headers: { Accept: accept },
     })

@@ -2605,6 +2605,9 @@ export class FakeSchoolRepository implements SchoolRepository {
         passwordHash: input.passwordHash,
         firstName: clean(input.firstName),
         lastName: clean(input.lastName),
+        // Mirror the Prisma repository: a registered teacher's optional phone
+        // number is persisted on the new user account.
+        phone: input.phone ?? null,
       })
     }
 

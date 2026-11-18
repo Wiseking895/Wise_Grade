@@ -12,11 +12,16 @@ import {
   SelectField,
 } from '../../components/ui'
 import { useSchool } from '../../schools/use-school'
+import { ApiError } from '../../lib/api'
 import {
   listAcademicYears,
   listTeacherAssignments,
   registerClassWithTeacher,
 } from '../../schools/api'
+import {
+  fieldFeedback,
+  type FieldFeedback,
+} from '../../schools/validation-feedback'
 import type {
   AcademicYear,
   ClassTeacherAssignment,
@@ -95,6 +100,7 @@ export default function TeachersPage() {
   const [registerForm, setRegisterForm] =
     useState<RegisterFormState>(EMPTY_REGISTER)
   const [registerError, setRegisterError] = useState<string | null>(null)
+  const [registerDetails, setRegisterDetails] = useState<FieldFeedback[]>([])
   const [registerBusy, setRegisterBusy] = useState(false)
 
   const load = useCallback(async () => {
@@ -128,6 +134,7 @@ export default function TeachersPage() {
   function resetRegisterForm() {
     setRegisterForm(EMPTY_REGISTER)
     setRegisterError(null)
+    setRegisterDetails([])
   }
 
   function updateRegister(patch: Partial<RegisterFormState>) {
@@ -141,6 +148,7 @@ export default function TeachersPage() {
 
     setRegisterBusy(true)
     setRegisterError(null)
+    setRegisterDetails([])
 
     try {
       const result = await registerClassWithTeacher(schoolId, {
@@ -148,9 +156,12 @@ export default function TeachersPage() {
         level: registerForm.level.trim() || null,
         academicYearId: registerForm.academicYearId || null,
         teacher: {
-          firstName: registerForm.firstName,
-          lastName: registerForm.lastName,
-          email: registerForm.email,
+          // Match the backend contract exactly: names and email are trimmed, so
+          // a stray leading or trailing space cannot fail a later rule (such as
+          // the two-character name minimum).
+          firstName: registerForm.firstName.trim(),
+          lastName: registerForm.lastName.trim(),
+          email: registerForm.email.trim(),
           phone: registerForm.phone.trim() || null,
           initialPassword: registerForm.initialPassword,
         },
@@ -166,6 +177,11 @@ export default function TeachersPage() {
         cause instanceof Error
           ? cause.message
           : 'Could not register the class and class teacher.',
+      )
+      // The API returns one entry per rejected field. Showing them next to the
+      // alert turns "Validation failed" into an actionable message.
+      setRegisterDetails(
+        cause instanceof ApiError ? fieldFeedback(cause.details) : [],
       )
     } finally {
       setRegisterBusy(false)
@@ -432,12 +448,22 @@ export default function TeachersPage() {
           </section>
 
           {registerError ? (
-            <p
+            <div
               role="alert"
               className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
             >
-              {registerError}
-            </p>
+              <p>{registerError}</p>
+              {registerDetails.length > 0 ? (
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {registerDetails.map((detail) => (
+                    <li key={`${detail.field}:${detail.message}`}>
+                      <span className="font-semibold">{detail.label}:</span>{' '}
+                      {detail.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           ) : null}
           <div className="flex justify-end gap-2 pt-2">
             <Button

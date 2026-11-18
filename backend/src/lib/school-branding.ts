@@ -182,18 +182,22 @@ const GHANA_MOBILE_NATIONAL = /^[235]\d{8}$/
 export function normalizeGhanaMobile(value: string): string {
   const cleaned = value.trim().replace(/[\s().-]/g, '')
 
-  let national: string
+  let national = cleaned
 
-  if (cleaned.startsWith('+233')) {
-    national = cleaned.slice(4)
-  } else if (cleaned.startsWith('00233')) {
-    national = cleaned.slice(5)
-  } else if (cleaned.startsWith('233')) {
-    national = cleaned.slice(3)
-  } else if (cleaned.startsWith('0')) {
-    national = cleaned.slice(1)
-  } else {
-    national = cleaned
+  if (national.startsWith('+233')) {
+    national = national.slice(4)
+  } else if (national.startsWith('00233')) {
+    national = national.slice(5)
+  } else if (national.startsWith('233')) {
+    national = national.slice(3)
+  }
+
+  // Ghanaians commonly write the country code followed by the national number
+  // that still carries its trunk 0, for example "+233 (0)24 000 0000". Strip
+  // that single leading 0 so the same number is accepted however it is written.
+  // Local numbers ("024 000 0000") take the same path.
+  if (national.startsWith('0')) {
+    national = national.slice(1)
   }
 
   if (!GHANA_MOBILE_NATIONAL.test(national)) {

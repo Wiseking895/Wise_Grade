@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "typecheck": "tsc -b",
-    "test": "node --test tests/api-url.test.ts tests/register.test.ts tests/report-release.test.ts tests/early-years.test.ts tests/role-separation.test.ts tests/school-branding.test.ts tests/platform-admin.test.ts tests/platform-operations.test.ts tests/term-records.test.ts tests/location.test.ts",
+    "test": "node --test tests/api-url.test.ts tests/register.test.ts tests/report-release.test.ts tests/early-years.test.ts tests/role-separation.test.ts tests/school-branding.test.ts tests/platform-admin.test.ts tests/platform-operations.test.ts tests/term-records.test.ts tests/location.test.ts tests/teacher-registration.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:report": "playwright show-report .artifacts/phase6c/playwright-report",
     "preview": "vite preview"

@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { describe, it } from 'node:test'
 import {
   checkDeployableApiUrl,
   LOCAL_API_URL,
   resolveApiBaseUrl,
 } from '../src/lib/api-url.ts'
+
+function source(path: string): Promise<string> {
+  return readFile(new URL(path, import.meta.url), 'utf8')
+}
 
 describe('API base URL resolution', () => {
   it('uses the local backend by default during development', () => {
@@ -69,6 +74,34 @@ describe('API base URL resolution', () => {
       assert.ok(resolved.error, `expected an error for ${value}`)
     }
   })
+})
+
+describe('single API origin', () => {
+  it('exports one validated base URL from the shared client', async () => {
+    const text = await source('../src/lib/api.ts')
+
+    assert.match(text, /export const API_BASE_URL/)
+    assert.match(text, /credentials: 'include'/)
+  })
+
+  for (const modulePath of [
+    '../src/billing/api.ts',
+    '../src/reports/api.ts',
+  ]) {
+    it(`keeps ${modulePath} on the shared origin`, async () => {
+      const text = await source(modulePath)
+
+      // These modules download private files directly, so they must not
+      // re-resolve VITE_API_URL or silently fall back to localhost when the
+      // production variable is missing.
+      assert.match(text, /API_BASE_URL/)
+      assert.match(text, /API_CONFIGURATION_ERROR/)
+      assert.match(text, /credentials: 'include'/)
+      assert.doesNotMatch(text, /import\.meta\.env/)
+      assert.doesNotMatch(text, /localhost:4000/)
+      assert.doesNotMatch(text, /api-placeholder/)
+    })
+  }
 })
 
 describe('build-time API URL check', () => {

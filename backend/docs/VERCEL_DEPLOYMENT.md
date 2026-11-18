@@ -93,8 +93,8 @@ placeholders; never commit real values.
 | `NODE_ENV` | `production` |
 | `DATABASE_URL` | Neon **pooled** connection string (`-pooler` host) |
 | `AUTH_SECRET` | Long random secret; also derives MFA key material |
-| `CORS_ORIGINS` | `https://frontend-esf6.vercel.app` (exact origin, no wildcard) |
-| `FRONTEND_URL` | `https://frontend-esf6.vercel.app`. Required: without it the schema falls back to `http://localhost:5173`, which production validation rejects, so the API fails to boot. |
+| `CORS_ORIGINS` | `https://wisegrade.app` (exact origin, no wildcard). Add any other exact frontend origin that must call the API, separated by commas. |
+| `FRONTEND_URL` | `https://wisegrade.app`. Required: without it the schema falls back to `http://localhost:5173`, which production validation rejects, so the API fails to boot. |
 | `CRON_SECRET` | Random value, at least 16 characters |
 | `CALENDAR_SCHEDULER_ENABLED` | `true` |
 | `CALENDAR_SCHEDULER_INTERVAL_MINUTES` | `1440` for the included daily Cron |
@@ -220,9 +220,8 @@ scheduler, set `CALENDAR_SCHEDULER_ENABLED=false` and remove the Cron entry.
 3. Confirm the project uses repository `Wiseking895/Wise_Grade`, Root Directory
    `backend`, Framework Preset Other, and the latest `vercel.json`.
 4. Deploy. The build runs `prisma generate` and `tsc`.
-5. Open `https://gradely-backend.vercel.app/api/health` and
-   `https://gradely-backend.vercel.app/api/ready` (or the project's current
-   production URL). `health` proves the function is running; `ready` proves Neon
+5. Open `https://wisegradebackend.vercel.app/api/health` and
+   `https://wisegradebackend.vercel.app/api/ready`. `health` proves the function is running; `ready` proves Neon
    is reachable from the deployed function.
 6. Verify CORS with a preflight from the frontend origin.
 7. Verify the scheduler endpoint with the bearer token (expect a run summary or
@@ -285,12 +284,12 @@ Preflight:
 
 ```bash
 curl -i -X OPTIONS https://<backend-origin>/api/auth/login \
-  -H "Origin: https://frontend-esf6.vercel.app" \
+  -H "Origin: https://wisegrade.app" \
   -H "Access-Control-Request-Method: POST" \
   -H "Access-Control-Request-Headers: content-type"
 ```
 
-Expected: `204`, `Access-Control-Allow-Origin: https://frontend-esf6.vercel.app`,
+Expected: `204`, `Access-Control-Allow-Origin: https://wisegrade.app`,
 `Access-Control-Allow-Credentials: true`. No wildcard.
 
 Scheduler (do not print the secret):
@@ -313,19 +312,19 @@ Sign in through the frontend and confirm:
 
 ## 8. Point the frontend at the backend
 
-The frontend currently uses the temporary value
-`https://api-placeholder.gradely.invalid`. After the backend is deployed:
+The production frontend is `https://wisegrade.app` and is built with
+`VITE_API_URL=https://wisegradebackend.vercel.app`. To change or verify it:
 
-1. Copy the backend production URL, for example
-   `https://gradely-backend.vercel.app`. Use the origin only, no trailing slash,
+1. Copy the backend production URL. Use the origin only, no trailing slash,
    no `/api`.
 2. In the frontend Vercel project, open **Settings → Environment Variables** and
-   set `VITE_API_URL` for **Production** and **Preview**.
+   set `VITE_API_URL` for **Production** (and each Preview that needs the API).
 3. Redeploy the frontend. Vite inlines the value at build time, so an existing
    deployment will not pick it up.
 4. Confirm the backend `CORS_ORIGINS`/`FRONTEND_URL` still contain the exact
-   frontend origin.
-5. Open `https://frontend-esf6.vercel.app`, sign in and load a DB-backed page.
+   frontend origin. The current production origin is `https://wisegrade.app`;
+   `https://www.wisegrade.app` is not allowed unless it is separately added.
+5. Open `https://wisegrade.app`, sign in and load a DB-backed page.
 6. If the frontend preview URL differs, add that exact origin to the backend
    preview `CORS_ORIGINS`; wildcards are rejected.
 

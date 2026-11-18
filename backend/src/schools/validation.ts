@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  emailSchema,
   ghanaMobileSchema,
   schoolLogoUploadSchema,
 } from '../auth/validation.js'
@@ -14,10 +15,15 @@ const shortText = (max: number) =>
 
 const optionalText = (max: number) => shortText(max).optional().nullable()
 
-const optionalGhanaMobile = z
-  .union([ghanaMobileSchema, z.null()])
-  .optional()
-  .transform((value) => (value === undefined ? undefined : value))
+const optionalGhanaMobile = ghanaMobileSchema.nullable().optional()
+
+/**
+ * Teacher email addresses use the same canonical rule as every other account:
+ * trimmed and lowercased before the format check, so a value pasted with
+ * surrounding whitespace is accepted instead of failing a rule that looks
+ * unrelated to what was typed.
+ */
+const teacherEmail = emailSchema
 
 const optionalEmail = z
   .string()
@@ -301,10 +307,7 @@ const registrationSubjectSchema = z
       .object({
         firstName: personName,
         lastName: personName,
-        email: z
-          .email('Enter a valid email address')
-          .max(320, 'Email is too long')
-          .transform((value) => value.trim().toLowerCase()),
+        email: teacherEmail,
         phone: optionalGhanaMobile,
       })
       .strict()
@@ -324,10 +327,7 @@ export const subjectTeacherDetailsSchema = z
   .object({
     firstName: personName,
     lastName: personName,
-    email: z
-      .email('Enter a valid email address')
-      .max(320, 'Email is too long')
-      .transform((value) => value.trim().toLowerCase()),
+    email: teacherEmail,
     phone: optionalGhanaMobile,
   })
   .strict()
@@ -383,10 +383,7 @@ export const registerClassWithTeacherSchema = z
       .object({
         firstName: personName,
         lastName: personName,
-        email: z
-          .email('Enter a valid email address')
-          .max(320, 'Email is too long')
-          .transform((value) => value.trim().toLowerCase()),
+        email: teacherEmail,
         phone: optionalGhanaMobile,
         initialPassword: password,
       })
@@ -398,10 +395,7 @@ export const registerTeacherSchema = z
   .object({
     firstName: personName,
     lastName: personName,
-    email: z
-      .email('Enter a valid email address')
-      .max(320, 'Email is too long')
-      .transform((value) => value.trim().toLowerCase()),
+    email: teacherEmail,
     phone: optionalGhanaMobile,
     // The corrected workflow allows the school administrator to register only
     // class teachers. Subject teachers are invited by the class teacher.

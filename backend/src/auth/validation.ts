@@ -5,10 +5,17 @@ import {
   SCHOOL_LOGO_MIME_TYPES,
 } from '../lib/school-branding.js'
 
-const email = z
-  .email('Enter a valid email address')
-  .max(320, 'Email is too long')
-  .transform((value) => value.trim().toLowerCase())
+/**
+ * Canonical account email rule: trim and lowercase before the format check, so
+ * a value typed with surrounding whitespace is normalized rather than rejected.
+ * The accepted format and stored value are unchanged.
+ */
+export const emailSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .pipe(z.email('Enter a valid email address'))
+  .pipe(z.string().max(320, 'Email is too long'))
 
 const personName = z
   .string()
@@ -60,7 +67,7 @@ export const registerSchoolSchema = z
       .max(160, 'School name must be 160 characters or fewer'),
     firstName: personName,
     lastName: personName,
-    email,
+    email: emailSchema,
     password,
     landmark: z
       .string()
@@ -81,7 +88,7 @@ export const registerSchoolSchema = z
 
 export const loginSchema = z
   .object({
-    email,
+    email: emailSchema,
     password: z.string().min(1, 'Password is required').max(128),
     /** Optional TOTP or recovery code when MFA is enabled. */
     mfaCode: z.string().trim().max(40).optional(),
@@ -89,7 +96,7 @@ export const loginSchema = z
   .strict()
 
 export const passwordResetRequestSchema = z
-  .object({ email })
+  .object({ email: emailSchema })
   .strict()
 
 export const passwordResetConfirmSchema = z

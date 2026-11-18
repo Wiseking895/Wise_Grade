@@ -282,6 +282,10 @@ export function createApp(options: AppOptions = {}): Express {
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Platform-Reauth'],
+      // Cross-origin JavaScript can only read safelisted response headers
+      // unless they are explicitly exposed. CSV downloads use the server's
+      // filename from Content-Disposition.
+      exposedHeaders: ['Content-Disposition'],
       // Answer preflights directly with 204 and cache the result for 10 minutes.
       preflightContinue: false,
       optionsSuccessStatus: 204,

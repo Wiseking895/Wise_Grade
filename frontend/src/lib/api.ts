@@ -18,11 +18,12 @@ const apiBaseUrl = resolveApiBaseUrl(
  */
 export const API_CONFIGURATION_ERROR = apiBaseUrl.error
 
-const API_URL = apiBaseUrl.baseUrl
+/** Shared, validated API origin used by every browser request. */
+export const API_BASE_URL = apiBaseUrl.baseUrl
 
 /** Resolves a private API asset path to the configured backend origin. */
 export function apiAssetUrl(path: string): string {
-  return path.startsWith('http') ? path : `${API_URL}${path}`
+  return path.startsWith('http') ? path : `${API_BASE_URL}${path}`
 }
 
 export interface ApiFieldError {
@@ -68,7 +69,7 @@ export async function apiRequest<T>(
   let response: Response
 
   try {
-    response = await fetch(`${API_URL}${path}`, {
+    response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method ?? 'GET',
       // The API authenticates with an HttpOnly cookie, so every browser call
       // must opt in to sending credentials.
@@ -176,7 +177,7 @@ export async function downloadFile(
   let response: Response
 
   try {
-    response = await fetch(`${API_URL}${path}`, {
+    response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method ?? 'GET',
       credentials: 'include',
       headers: { ...options.headers },

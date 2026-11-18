@@ -147,6 +147,24 @@ describe('CORS preflight', () => {
     expect(response.headers['access-control-allow-origin']).toBeUndefined()
   })
 
+  it('exposes only the download filename header to the allowed frontend', async () => {
+    const app = createApp({
+      authRepository: new FakeAuthRepository(),
+      allowedOrigins: productionOrigins,
+    })
+
+    const response = await request(app)
+      .get('/api/auth/me')
+      .set('Origin', DEPLOYED_FRONTEND)
+
+    expect(response.headers['access-control-allow-origin']).toBe(
+      DEPLOYED_FRONTEND,
+    )
+    expect(response.headers['access-control-expose-headers']).toContain(
+      'Content-Disposition',
+    )
+  })
+
   it('rejects a localhost origin against the production configuration', async () => {
     const app = createApp({
       authRepository: new FakeAuthRepository(),
