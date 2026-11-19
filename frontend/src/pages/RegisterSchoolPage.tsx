@@ -197,7 +197,7 @@ export default function RegisterSchoolPage() {
             onChange={(event) => updateField('landmark', event.target.value)}
           />
           <FormField
-            label="Ghana mobile number"
+            label="Phone number"
             name="phone"
             type="tel"
             inputMode="tel"
@@ -205,6 +205,7 @@ export default function RegisterSchoolPage() {
             placeholder="024 000 0000"
             value={values.phone}
             error={errors.phone}
+            hint="Ghana numbers can be entered locally. International numbers need a country code, e.g. +44 20 7946 0958."
             onChange={(event) => updateField('phone', event.target.value)}
           />
         </div>

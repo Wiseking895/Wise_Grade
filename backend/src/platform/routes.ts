@@ -138,6 +138,32 @@ export function createPlatformRouter(
         const schoolId = randomUUID()
         const logoObjectKey = schoolLogoStorageKey(schoolId, logo.extension)
 
+        if (await authRepository.findUserByEmail(input.email)) {
+          throw new HttpError(
+            409,
+            'An account with this email address already exists',
+            [
+              {
+                field: 'email',
+                message: 'This email address is already registered',
+              },
+            ],
+          )
+        }
+
+        if (await authRepository.findUserByPhone(input.phone)) {
+          throw new HttpError(
+            409,
+            'An account with this phone number already exists',
+            [
+              {
+                field: 'phone',
+                message: 'This phone number is already registered',
+              },
+            ],
+          )
+        }
+
         await options.storage.putObject(logoObjectKey, logo.data, logo.mimeType)
 
         let result
@@ -160,6 +186,7 @@ export function createPlatformRouter(
               passwordHash,
               firstName: input.firstName,
               lastName: input.lastName,
+              phone: input.phone,
             },
           })
         } catch (error) {

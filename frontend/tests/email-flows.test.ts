@@ -97,6 +97,8 @@ describe('class teacher onboarding messaging', () => {
 
     assert.match(page, /temporary password were emailed to/)
     assert.match(page, /must choose a personal password/)
-    assert.match(page, /must replace this temporary password at first sign-in/)
+    assert.match(page, /Gradely generates a strong temporary password/)
+    assert.match(page, /never shown in this dashboard/)
+    assert.match(page, /must create a personal\s+password at first sign-in/)
   })
 })

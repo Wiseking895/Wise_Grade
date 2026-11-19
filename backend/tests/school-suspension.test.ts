@@ -99,12 +99,12 @@ describe('school suspension enforcement', () => {
         lastName: 'Teacher',
         email,
         role: 'CLASS_TEACHER',
-        initialPassword: TEST_PASSWORD,
         className: 'Basic 3',
       })
 
     expect(created.status).toBe(201)
 
+    await auth.setPasswordForTesting(email, TEST_PASSWORD)
     const { agent, response } = await login(email)
     expect(response.status).toBe(200)
 
@@ -216,7 +216,7 @@ describe('school suspension enforcement', () => {
   // Subject Teacher (restricted access-code session)
   // -------------------------------------------------------------------------
   describe('subject teacher access code', () => {
-    const code = 'subject-access-code-0123456789abcdef'
+    const code = '4821Kmw'
 
     async function enterCode(value: string) {
       const agent = request.agent(app)
@@ -265,7 +265,7 @@ describe('school suspension enforcement', () => {
         codeHash: hashToken(code),
         schoolId: suspendedSchool.schoolId,
       })
-      const otherCode = 'other-subject-access-code-0123456789'
+      const otherCode = '9137Bqt'
       auth.addSubjectTeacherInvitation({
         codeHash: hashToken(otherCode),
         schoolId: activeSchool.schoolId,

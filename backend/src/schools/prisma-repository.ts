@@ -4,7 +4,10 @@ import { env } from '../config/env.js'
 import type { Prisma } from '../generated/prisma/client.js'
 import { isUniqueConstraintError } from '../auth/prisma-repository.js'
 import { isSchoolRole, type SchoolRole } from '../auth/roles.js'
-import { generateOpaqueToken, hashToken } from '../auth/tokens.js'
+import {
+  generateSubjectAccessCode,
+  hashToken,
+} from '../auth/tokens.js'
 import {
   isSchoolIdentityComplete,
   schoolLogoUrl,
@@ -997,7 +1000,24 @@ async function issueSubjectTeacherInvitation(
     data: { revokedAt: now },
   })
 
-  const code = generateOpaqueToken()
+  // Generate a code in the exact DDDDUll shape. The hash is unique in the
+  // database; a pre-check makes an accidental collision retry rather than
+  // surfacing a unique-constraint error. The space is ~175.8 million codes.
+  let code = generateSubjectAccessCode()
+  let codeHash = hashToken(code)
+
+  for (
+    let attempt = 0;
+    attempt < 5 && (await tx.subjectTeacherInvitation.findUnique({
+      where: { codeHash },
+      select: { id: true },
+    }));
+    attempt += 1
+  ) {
+    code = generateSubjectAccessCode()
+    codeHash = hashToken(code)
+  }
+
   const invitation = await tx.subjectTeacherInvitation.create({
     data: {
       schoolId,
@@ -1006,7 +1026,7 @@ async function issueSubjectTeacherInvitation(
       assignmentId,
       membershipId: membershipId ?? null,
       createdByMembershipId,
-      codeHash: hashToken(code),
+      codeHash,
       expiresAt: new Date(now.getTime() + INVITATION_TTL_MS),
       reissuedFromId: reissuedFromId ?? null,
     },
@@ -2023,16 +2043,32 @@ export function createPrismaSchoolRepository(): SchoolRepository {
           }
 
           if (!user) {
+            const phone = input.teacher.phone?.trim() || null
+
+            if (phone) {
+              const phoneOwner = await tx.user.findFirst({
+                where: { phone },
+                select: { id: true },
+              })
+
+              if (phoneOwner) {
+                throw new HttpError(
+                  409,
+                  'This phone number is already registered to another account',
+                )
+              }
+            }
+
             user = await tx.user.create({
               data: {
                 email,
                 passwordHash: input.teacher.passwordHash,
                 firstName: normalizeName(input.teacher.firstName),
                 lastName: normalizeName(input.teacher.lastName),
-                phone: input.teacher.phone?.trim() || null,
+                phone,
                 isPlatformAdmin: false,
-                // The administrator chose this password on the teacher's
-                // behalf, so the teacher must replace it at first sign-in.
+                // The administrator never chooses this password. The server
+                // generates it and the teacher must replace it at first sign-in.
                 mustChangePassword: true,
               },
             })
@@ -3289,17 +3325,33 @@ export function createPrismaSchoolRepository(): SchoolRepository {
         let user = await tx.user.findUnique({ where: { email } })
 
         if (!user) {
+          const phone = input.phone?.trim() || null
+
+          if (phone) {
+            const phoneOwner = await tx.user.findFirst({
+              where: { phone },
+              select: { id: true },
+            })
+
+            if (phoneOwner) {
+              throw new HttpError(
+                409,
+                'This phone number is already registered to another account',
+              )
+            }
+          }
+
           user = await tx.user.create({
             data: {
               email,
               passwordHash: input.passwordHash,
               firstName: normalizeName(input.firstName),
               lastName: normalizeName(input.lastName),
-              phone: input.phone?.trim() || null,
+              phone,
               // Teacher creation can never grant platform administration.
               isPlatformAdmin: false,
-              // An administrator-supplied password is temporary for class
-              // teachers and must be replaced before the account is usable.
+              // A server-generated password is temporary for class teachers
+              // and must be replaced before the account is usable.
               mustChangePassword: input.role === 'CLASS_TEACHER',
             },
           })
@@ -3346,6 +3398,72 @@ export function createPrismaSchoolRepository(): SchoolRepository {
             audit,
           })
         }
+
+        return mapTeacher(membership)
+      })
+    },
+
+    async resetTeacherTemporaryPassword(
+      schoolId,
+      membershipId,
+      passwordHash,
+      audit,
+    ) {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        await findSchoolOrThrow(tx, schoolId)
+
+        const membership = await tx.schoolMembership.findFirst({
+          where: { id: membershipId, schoolId },
+          include: { user: true },
+        })
+
+        if (!membership) {
+          throw new HttpError(404, 'Class teacher not found')
+        }
+
+        if (membership.role !== 'CLASS_TEACHER') {
+          throw new HttpError(
+            409,
+            'Only a class teacher account can receive replacement credentials',
+          )
+        }
+
+        if (membership.status !== 'ACTIVE' || !membership.user.isActive) {
+          throw new HttpError(
+            409,
+            'This teacher account is not active. Restore access before reissuing credentials.',
+          )
+        }
+
+        const now = new Date()
+
+        await tx.user.update({
+          where: { id: membership.userId },
+          data: {
+            passwordHash,
+            mustChangePassword: true,
+            passwordChangedAt: null,
+          },
+        })
+
+        // A new temporary password invalidates every existing session, so a
+        // teacher who already signed in with the previous value is signed out.
+        await tx.session.updateMany({
+          where: { userId: membership.userId, revokedAt: null },
+          data: { revokedAt: now },
+        })
+
+        await recordAudit(
+          tx,
+          schoolId,
+          audit,
+          'TEACHER_CREDENTIALS_REISSUED',
+          'SchoolMembership',
+          membership.id,
+          { email: membership.user.email, userId: membership.userId },
+        )
 
         return mapTeacher(membership)
       })

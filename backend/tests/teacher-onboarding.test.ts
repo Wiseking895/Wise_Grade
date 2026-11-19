@@ -6,7 +6,6 @@ import { CaptureEmailService } from './helpers/capture-email-service.js'
 import { FakeAuthRepository } from './helpers/fake-auth-repository.js'
 import { FakeSchoolRepository } from './helpers/fake-school-repository.js'
 
-const TEACHER_PASSWORD = 'InitialPass123'
 const NEW_TEACHER_PASSWORD = 'PersonalPass456'
 
 /**
@@ -58,7 +57,6 @@ describe('class teacher onboarding', () => {
   async function registerClass(overrides: {
     className: string
     email: string
-    initialPassword?: string
   }) {
     return admin
       .post(`/api/schools/${schoolId}/classes/register`)
@@ -72,12 +70,11 @@ describe('class teacher onboarding', () => {
           lastName: 'Mensah',
           email: overrides.email,
           phone: null,
-          initialPassword: overrides.initialPassword ?? TEACHER_PASSWORD,
         },
       })
   }
 
-  it('emails the class teacher their school, class, login and temporary password', async () => {
+  it('emails the class teacher their school, class, login and generated password', async () => {
     const response = await registerClass({
       className: 'Basic 2',
       email: 'ama@onboarding.test',
@@ -91,17 +88,26 @@ describe('class teacher onboarding', () => {
     expect(credentials?.data.schoolName).toBe('Onboarding Academy')
     expect(credentials?.data.className).toBe('Basic 2')
     expect(credentials?.data.loginEmail).toBe('ama@onboarding.test')
-    expect(credentials?.data.temporaryPassword).toBe(TEACHER_PASSWORD)
     expect(String(credentials?.data.loginUrl)).toContain('/login')
+
+    // The administrator never chose this value: the server generated a strong
+    // temporary password and included it only in the onboarding email.
+    const temporaryPassword = String(credentials?.data.temporaryPassword)
+    expect(temporaryPassword).toHaveLength(20)
+    expect(temporaryPassword).toMatch(/[A-Z]/)
+    expect(temporaryPassword).toMatch(/[a-z]/)
+    expect(temporaryPassword).toMatch(/[0-9]/)
+    expect(temporaryPassword).not.toMatch(/[0O1Il]/)
 
     // The temporary password never appears in the API response or in stored
     // audit metadata.
-    expect(JSON.stringify(response.body)).not.toContain(TEACHER_PASSWORD)
-    expect(JSON.stringify(auth.audits)).not.toContain(TEACHER_PASSWORD)
+    expect(JSON.stringify(response.body)).not.toContain(temporaryPassword)
+    expect(JSON.stringify(response.body)).not.toMatch(/password/i)
+    expect(JSON.stringify(auth.audits)).not.toContain(temporaryPassword)
 
     const teachers = await admin.get(`/api/schools/${schoolId}/teachers`)
     expect(teachers.status).toBe(200)
-    expect(JSON.stringify(teachers.body)).not.toContain(TEACHER_PASSWORD)
+    expect(JSON.stringify(teachers.body)).not.toContain(temporaryPassword)
     expect(JSON.stringify(teachers.body)).not.toContain('passwordHash')
   })
 
@@ -111,11 +117,16 @@ describe('class teacher onboarding', () => {
       email: 'ama@onboarding.test',
     })
 
+    const temporaryPassword = String(
+      email.last('teacher-credentials')?.data.temporaryPassword,
+    )
+    expect(temporaryPassword).toHaveLength(20)
+
     const teacher = request.agent(app)
     const login = await teacher
       .post('/api/auth/login')
       .set('Origin', TEST_ORIGIN)
-      .send({ email: 'ama@onboarding.test', password: TEACHER_PASSWORD })
+      .send({ email: 'ama@onboarding.test', password: temporaryPassword })
 
     expect(login.status).toBe(200)
     expect(login.body.data.user.mustChangePassword).toBe(true)
@@ -124,7 +135,7 @@ describe('class teacher onboarding', () => {
     const reminder = email.last('teacher-first-login')
     expect(reminder).toBeDefined()
     expect(String(reminder?.data.changePasswordUrl)).toContain('/change-password')
-    expect(JSON.stringify(reminder?.data)).not.toContain(TEACHER_PASSWORD)
+    expect(JSON.stringify(reminder?.data)).not.toContain(temporaryPassword)
 
     // The session may read its own identity and sign out, but nothing else.
     const me = await teacher.get('/api/auth/me')
@@ -148,7 +159,7 @@ describe('class teacher onboarding', () => {
       .post('/api/auth/change-password')
       .set('Origin', TEST_ORIGIN)
       .send({
-        currentPassword: TEACHER_PASSWORD,
+        currentPassword: temporaryPassword,
         newPassword: NEW_TEACHER_PASSWORD,
       })
     expect(changed.status).toBe(200)
@@ -161,7 +172,7 @@ describe('class teacher onboarding', () => {
     const oldLogin = await request(app)
       .post('/api/auth/login')
       .set('Origin', TEST_ORIGIN)
-      .send({ email: 'ama@onboarding.test', password: TEACHER_PASSWORD })
+      .send({ email: 'ama@onboarding.test', password: temporaryPassword })
     expect(oldLogin.status).toBe(401)
 
     const newLogin = await request(app)
@@ -183,7 +194,6 @@ describe('class teacher onboarding', () => {
     const response = await registerClass({
       className: 'Basic 3',
       email: 'existing@onboarding.test',
-      initialPassword: 'ShouldNeverBeUsed789',
     })
 
     expect(response.status).toBe(201)
@@ -208,12 +218,10 @@ describe('class teacher onboarding', () => {
     await registerClass({
       className: 'Basic 2',
       email: 'first@onboarding.test',
-      initialPassword: 'FirstTemporary123',
     })
     await registerClass({
       className: 'Basic 4',
       email: 'second@onboarding.test',
-      initialPassword: 'SecondTemporary456',
     })
 
     const messages = email.all('teacher-credentials')
@@ -221,10 +229,14 @@ describe('class teacher onboarding', () => {
 
     const first = messages.find((message) => message.to === 'first@onboarding.test')
     const second = messages.find((message) => message.to === 'second@onboarding.test')
+    const firstPassword = String(first?.data.temporaryPassword)
+    const secondPassword = String(second?.data.temporaryPassword)
 
-    expect(first?.data.temporaryPassword).toBe('FirstTemporary123')
-    expect(second?.data.temporaryPassword).toBe('SecondTemporary456')
-    expect(JSON.stringify(first?.data)).not.toContain('SecondTemporary456')
-    expect(JSON.stringify(second?.data)).not.toContain('FirstTemporary123')
+    expect(firstPassword).toHaveLength(20)
+    expect(secondPassword).toHaveLength(20)
+    // Two registrations never reuse the same generated password.
+    expect(firstPassword).not.toBe(secondPassword)
+    expect(JSON.stringify(first?.data)).not.toContain(secondPassword)
+    expect(JSON.stringify(second?.data)).not.toContain(firstPassword)
   })
 })

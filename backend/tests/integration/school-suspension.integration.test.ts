@@ -390,7 +390,7 @@ describe.skipIf(!runIntegration)('School suspension integration', () => {
 
   it('invalidates subject-teacher access-code sessions while the school is suspended', async () => {
     const school = await registerSchool('subject')
-    const code = `subject-access-code-${nextSuffix()}-0123456789`
+    const code = `${String(Math.floor(Math.random() * 10_000)).padStart(4, '0')}Kmw`
     await createSubjectTeacherAccessCode(school.schoolId, code, nextSuffix())
 
     const subjectAgent = request.agent(app)

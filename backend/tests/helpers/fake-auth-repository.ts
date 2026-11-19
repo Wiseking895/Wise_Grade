@@ -123,6 +123,7 @@ export class FakeAuthRepository implements AuthRepository {
   failNextSchoolCreation = false
 
   private emailIndex = new Map<string, string>()
+  private phoneIndex = new Map<string, string>()
 
   /**
    * Existing route suites treat a freshly registered administrator as an
@@ -168,6 +169,12 @@ export class FakeAuthRepository implements AuthRepository {
       })
     }
 
+    if (input.admin.phone && this.phoneIndex.has(input.admin.phone)) {
+      throw Object.assign(new Error('Unique constraint failed'), {
+        code: 'P2002',
+      })
+    }
+
     const school: StoredSchool = {
       id: input.school.id,
       name: input.school.name,
@@ -190,7 +197,7 @@ export class FakeAuthRepository implements AuthRepository {
       passwordHash: input.admin.passwordHash,
       firstName: input.admin.firstName,
       lastName: input.admin.lastName,
-      phone: null,
+      phone: input.admin.phone,
       isPlatformAdmin: false,
       isActive: true,
       mfaEnabled: false,
@@ -217,6 +224,9 @@ export class FakeAuthRepository implements AuthRepository {
     this.schools.set(school.id, school)
     this.users.set(user.id, user)
     this.emailIndex.set(email, user.id)
+    if (user.phone) {
+      this.phoneIndex.set(user.phone, user.id)
+    }
     this.memberships.set(`${school.id}:${user.id}`, membership)
     this.audits.push({
       schoolId: school.id,
@@ -235,6 +245,12 @@ export class FakeAuthRepository implements AuthRepository {
 
   async findUserByEmail(email: string): Promise<UserRecord | null> {
     const id = this.emailIndex.get(email.toLowerCase())
+    const user = id ? this.users.get(id) : undefined
+    return user ? { ...user } : null
+  }
+
+  async findUserByPhone(phone: string): Promise<UserRecord | null> {
+    const id = this.phoneIndex.get(phone)
     const user = id ? this.users.get(id) : undefined
     return user ? { ...user } : null
   }
@@ -1000,6 +1016,40 @@ export class FakeAuthRepository implements AuthRepository {
 
     if (user) {
       user.mustChangePassword = required
+    }
+  }
+
+  /**
+   * Test helper: replace an account's password hash as the credential reissue
+   * flow does, revoking active sessions and forcing a password change.
+   */
+  async replacePasswordHashFor(
+    userId: string,
+    passwordHash: string,
+  ): Promise<void> {
+    const user = this.users.get(userId)
+
+    if (!user) {
+      return
+    }
+
+    user.passwordHash = passwordHash
+    user.mustChangePassword = true
+    user.passwordChangedAt = null
+    await this.revokeAllSessionsForUser(userId)
+  }
+
+  /**
+   * Test helper: give an existing account a known password without forcing a
+   * rotation. Used by suites that exercise features after teacher onboarding.
+   */
+  async setPasswordForTesting(email: string, password: string): Promise<void> {
+    const id = this.emailIndex.get(email.trim().toLowerCase())
+    const user = id ? this.users.get(id) : undefined
+
+    if (user) {
+      user.passwordHash = await hashPassword(password)
+      user.mustChangePassword = false
     }
   }
 

@@ -57,11 +57,22 @@ async function registerSchool(
   return { app, auth, schools, admin, schoolId, adminUserId }
 }
 
+let currentAuth: FakeAuthRepository
+
 async function login(
   app: ReturnType<typeof createApp>,
   email: string,
   password = TEST_PASSWORD,
 ) {
+  // Class teachers now receive a server-generated temporary password that is
+  // only delivered by email. These suites focus on class management rather than
+  // onboarding, so give the account a known password before signing in. Accounts
+  // created directly with `createUser` already have this password; resetting it
+  // is harmless.
+  if (password === TEST_PASSWORD) {
+    await currentAuth.setPasswordForTesting(email, password)
+  }
+
   const agent = request.agent(app)
   const response = await agent
     .post('/api/auth/login')
@@ -79,6 +90,7 @@ describe('Phase 3 school management', () => {
 
   beforeEach(async () => {
     auth = new FakeAuthRepository()
+    currentAuth = auth
     schools = new FakeSchoolRepository(auth)
     app = createApp({ authRepository: auth, schoolRepository: schools })
     ctx = await registerSchool(auth, schools, app, {
@@ -322,7 +334,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Owusu',
           email: 'efua@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 1',
         })
 
@@ -360,7 +371,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Boateng',
           email: 'yaa@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 7',
         })
 
@@ -385,7 +395,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Owusu',
           email: 'efua@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 1',
         })
       expect(first.status).toBe(201)
@@ -398,7 +407,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Mensah',
           email: 'kojo@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 1',
         })
       expect(second.status).toBe(409)
@@ -422,7 +430,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Class',
           email: 'noclass@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
         })
 
       expect(response.status).toBe(400)
@@ -446,7 +453,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Teacher',
           email,
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className,
         })
 
@@ -656,7 +662,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Teacher',
           email: 'second-ct@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 3',
         })
       expect(response.status).toBe(201)
@@ -712,7 +717,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Teacher',
           email,
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className,
         })
 
@@ -984,7 +988,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Teacher',
           email,
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className,
         })
 
@@ -1160,7 +1163,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Mensah',
           email: 'esi-admin-subjects@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 3',
           subjects: [{ name: 'French', code: 'FRE' }],
         })
@@ -1534,7 +1536,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Asare',
           email: 'kwame@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 4',
         })
 
@@ -1555,7 +1556,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Actor',
           email: 'bad@greenvalley.test',
           role: 'SCHOOL_ADMIN',
-          initialPassword: TEST_PASSWORD,
         })
       expect(forbiddenRole.status).toBe(400)
 
@@ -1567,7 +1567,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Actor',
           email: 'bad2@greenvalley.test',
           role: 'PLATFORM_SUPER_ADMIN',
-          initialPassword: TEST_PASSWORD,
         })
       expect(platformRole.status).toBe(400)
 
@@ -1586,7 +1585,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Nyarko',
           email: 'adwoa@greenvalley.test',
           role: 'SUBJECT_TEACHER',
-          initialPassword: TEST_PASSWORD,
         })
       expect(adminAttempt.status).toBe(400)
       expect(await auth.findUserByEmail('adwoa@greenvalley.test')).toBeNull()
@@ -1599,7 +1597,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Teacher',
           email: 'ct-st-registration@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 2',
         })
       expect(classTeacherRegistration.status).toBe(201)
@@ -1654,7 +1651,6 @@ describe('Phase 3 school management', () => {
         lastName: 'Asare',
         email: 'kwame@greenvalley.test',
         role: 'CLASS_TEACHER',
-        initialPassword: TEST_PASSWORD,
         className: 'Basic 4',
       }
 
@@ -1672,7 +1668,6 @@ describe('Phase 3 school management', () => {
           lastName: 'Asare',
           email: 'kwame@greenvalley.test',
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 3',
         })
       expect(second.status).toBe(409)

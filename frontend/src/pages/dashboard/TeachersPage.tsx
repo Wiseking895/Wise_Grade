@@ -1,4 +1,4 @@
-import { Plus, UserPlus } from 'lucide-react'
+import { Mail, Plus, UserPlus } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import FormField from '../../components/FormField'
 import {
@@ -17,6 +17,7 @@ import {
   listAcademicYears,
   listTeacherAssignments,
   registerClassWithTeacher,
+  resendTeacherCredentials,
 } from '../../schools/api'
 import {
   fieldFeedback,
@@ -25,6 +26,7 @@ import {
 import type {
   AcademicYear,
   ClassTeacherAssignment,
+  OnboardingEmailStatus,
   TeacherAssignments,
 } from '../../schools/types'
 
@@ -36,7 +38,6 @@ interface RegisterFormState {
   lastName: string
   email: string
   phone: string
-  initialPassword: string
 }
 
 const EMPTY_REGISTER: RegisterFormState = {
@@ -47,7 +48,6 @@ const EMPTY_REGISTER: RegisterFormState = {
   lastName: '',
   email: '',
   phone: '',
-  initialPassword: '',
 }
 
 /**
@@ -81,6 +81,27 @@ const CLASS_LEVEL_OPTIONS = [
 ] as const
 
 /**
+ * Reports what actually happened to the onboarding email. A queued message is
+ * not described as delivered, and a failed send points the administrator at the
+ * resend action.
+ */
+function onboardingMessage(
+  teacherName: string,
+  email: string,
+  status: OnboardingEmailStatus | undefined,
+): string {
+  if (status === 'sent') {
+    return `${teacherName} is registered. Their login details and a generated temporary password were emailed to ${email}. They must choose a personal password before opening the class workspace.`
+  }
+
+  if (status === 'queued') {
+    return `${teacherName} is registered. The onboarding email to ${email} is queued for delivery. If it does not arrive, use Resend credentials.`
+  }
+
+  return `${teacherName} is registered, but the onboarding email to ${email} could not be sent. Use Resend credentials to generate and email a fresh temporary password.`
+}
+
+/**
  * School administrators register a class together with its class teacher.
  * Everything else on this page is read-only: subjects and pupils belong to the
  * class teacher, and subject teachers are invited from the class page.
@@ -102,6 +123,9 @@ export default function TeachersPage() {
   const [registerError, setRegisterError] = useState<string | null>(null)
   const [registerDetails, setRegisterDetails] = useState<FieldFeedback[]>([])
   const [registerBusy, setRegisterBusy] = useState(false)
+  const [resendingMembershipId, setResendingMembershipId] = useState<
+    string | null
+  >(null)
 
   const load = useCallback(async () => {
     if (!schoolId) return
@@ -163,11 +187,14 @@ export default function TeachersPage() {
           lastName: registerForm.lastName.trim(),
           email: registerForm.email.trim(),
           phone: registerForm.phone.trim() || null,
-          initialPassword: registerForm.initialPassword,
         },
       })
       setSuccess(
-        `${result.teacher.firstName} ${result.teacher.lastName} is registered as the class teacher for ${result.class.name}. Their login email and temporary password were emailed to ${result.teacher.email}. They must choose a personal password before opening the class workspace.`,
+        onboardingMessage(
+          `${result.teacher.firstName} ${result.teacher.lastName}`,
+          result.teacher.email,
+          result.onboardingEmail,
+        ),
       )
       setRegisterOpen(false)
       resetRegisterForm()
@@ -185,6 +212,37 @@ export default function TeachersPage() {
       )
     } finally {
       setRegisterBusy(false)
+    }
+  }
+
+  async function resendCredentials(
+    assignment: ClassTeacherAssignment,
+  ): Promise<void> {
+    if (!schoolId || resendingMembershipId) return
+
+    setResendingMembershipId(assignment.membershipId)
+    setError(null)
+
+    try {
+      const result = await resendTeacherCredentials(
+        schoolId,
+        assignment.membershipId,
+      )
+      setSuccess(
+        onboardingMessage(
+          `${assignment.firstName} ${assignment.lastName}`,
+          assignment.email,
+          result.onboardingEmail,
+        ),
+      )
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : 'Could not reissue the class teacher credentials.',
+      )
+    } finally {
+      setResendingMembershipId(null)
     }
   }
 
@@ -269,15 +327,31 @@ export default function TeachersPage() {
                           (assignment) => (
                             <li
                               key={assignment.id}
-                              className="px-3 py-2.5 text-sm"
+                              className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 text-sm"
                             >
-                              <p className="font-semibold text-gradely-text">
-                                {assignment.className}
-                              </p>
-                              <p className="text-xs text-gradely-muted">
-                                {assignment.firstName} {assignment.lastName} ·{' '}
-                                {assignment.email}
-                              </p>
+                              <div>
+                                <p className="font-semibold text-gradely-text">
+                                  {assignment.className}
+                                </p>
+                                <p className="text-xs text-gradely-muted">
+                                  {assignment.firstName} {assignment.lastName} ·{' '}
+                                  {assignment.email}
+                                </p>
+                              </div>
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                loading={
+                                  resendingMembershipId ===
+                                  assignment.membershipId
+                                }
+                                disabled={resendingMembershipId !== null}
+                                onClick={() => void resendCredentials(assignment)}
+                              >
+                                <Mail aria-hidden="true" className="size-3.5" />
+                                Resend credentials
+                              </Button>
                             </li>
                           ),
                         )}
@@ -433,18 +507,13 @@ export default function TeachersPage() {
               placeholder="e.g. 024 000 0000"
               maxLength={20}
             />
-            <FormField
-              label="Initial password"
-              type="password"
-              value={registerForm.initialPassword}
-              onChange={(event) =>
-                updateRegister({ initialPassword: event.target.value })
-              }
-              required
-              minLength={10}
-              maxLength={128}
-              hint="We email these details to the class teacher. They must replace this temporary password at first sign-in before opening the class workspace."
-            />
+            <p className="rounded-xl border border-slate-200 bg-gradely-light px-3.5 py-3 text-xs leading-relaxed text-gradely-muted">
+              Gradely generates a strong temporary password automatically and
+              emails it to the teacher together with their login email, class and
+              the official login link. Nobody types or chooses it here, and it is
+              never shown in this dashboard. The teacher must create a personal
+              password at first sign-in.
+            </p>
           </section>
 
           {registerError ? (
@@ -481,8 +550,7 @@ export default function TeachersPage() {
                 registerForm.className.trim() === '' ||
                 registerForm.firstName.trim() === '' ||
                 registerForm.lastName.trim() === '' ||
-                registerForm.email.trim() === '' ||
-                registerForm.initialPassword.length < 10
+                registerForm.email.trim() === ''
               }
             >
               <Plus aria-hidden="true" className="size-4" />

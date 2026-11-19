@@ -1,8 +1,8 @@
-import { ImagePlus, Loader2, Save } from 'lucide-react'
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { ImagePlus, Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError, apiAssetUrl } from '../../lib/api'
 import { readFileAsBase64 } from '../../lib/files'
-import { validateSchoolLogoFile } from '../../lib/validation'
+import { normalizeGhanaMobile, validateSchoolLogoFile } from '../../lib/validation'
 import {
   AccessDenied,
   Button,
@@ -12,9 +12,11 @@ import {
   Panel,
   TextareaField,
 } from '../../components/ui'
+import AutoSaveIndicator from '../../components/AutoSaveIndicator'
 import FormField from '../../components/FormField'
 import SignatureManager from '../../components/SignatureManager'
 import { readDeviceTimeZone } from '../../location/device-time-zone'
+import { useAutoSave } from '../../lib/use-auto-save'
 import { useSchool } from '../../schools/use-school'
 import {
   getSchoolProfile,
@@ -60,13 +62,12 @@ export default function SchoolProfilePage() {
   const [signature, setSignature] = useState<SchoolSignature | null>(null)
   const [profileComplete, setProfileComplete] = useState(true)
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoPreview, setLogoPreview] = useState<string | null>(null)
   const [logoError, setLogoError] = useState<string | null>(null)
   const [uploadingLogo, setUploadingLogo] = useState(false)
+  const [logoNotice, setLogoNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!schoolId) return
@@ -108,8 +109,40 @@ export default function SchoolProfilePage() {
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }))
-    setSuccess(null)
   }
+
+  const profileInput = useMemo<SchoolProfileInput>(
+    () => ({
+      name: form.name.trim(),
+      email: form.email.trim() === '' ? null : form.email.trim(),
+      phone: form.phone.trim() === '' ? null : form.phone.trim(),
+      address: form.address.trim() === '' ? null : form.address.trim(),
+      landmark: form.landmark.trim() === '' ? null : form.landmark.trim(),
+      timezone: form.timezone.trim(),
+    }),
+    [form],
+  )
+
+  const canSaveProfile =
+    form.name.trim().length >= 2 &&
+    form.timezone.trim() !== '' &&
+    form.phone.trim() !== '' &&
+    normalizeGhanaMobile(form.phone) !== null
+
+  const autoSave = useAutoSave<SchoolProfileInput>({
+    value: profileInput,
+    enabled: Boolean(schoolId) && !loading && isAdmin,
+    canSave: canSaveProfile,
+    save: async (input) => {
+      if (!schoolId) return
+
+      const { school } = await updateSchoolProfile(schoolId, input)
+      setSlug(school.slug)
+      setLogoUrl(school.logoUrl)
+      setProfileComplete(school.profileComplete)
+      await refreshSchool()
+    },
+  })
 
   function chooseLogo(file: File | null) {
     if (logoPreview) {
@@ -119,7 +152,7 @@ export default function SchoolProfilePage() {
     setLogoFile(file)
     setLogoPreview(file ? URL.createObjectURL(file) : null)
     setLogoError(validateSchoolLogoFile(file))
-    setSuccess(null)
+    setLogoNotice(null)
   }
 
   async function handleLogoUpload() {
@@ -151,7 +184,9 @@ export default function SchoolProfilePage() {
       }
       setLogoPreview(null)
       setLogoFile(null)
-      setSuccess('School logo updated. Historical reports keep their original logo.')
+      setLogoNotice(
+        'School logo updated. Historical reports keep their original logo.',
+      )
       await refreshSchool()
     } catch (cause) {
       setLogoError(
@@ -161,49 +196,6 @@ export default function SchoolProfilePage() {
       )
     } finally {
       setUploadingLogo(false)
-    }
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    if (!schoolId) return
-
-    setSaving(true)
-    setError(null)
-    setSuccess(null)
-
-    const input: SchoolProfileInput = {
-      name: form.name.trim(),
-      email: form.email.trim() === '' ? null : form.email.trim(),
-      phone: form.phone.trim() === '' ? null : form.phone.trim(),
-      address: form.address.trim() === '' ? null : form.address.trim(),
-      landmark: form.landmark.trim() === '' ? null : form.landmark.trim(),
-      timezone: form.timezone.trim(),
-    }
-
-    try {
-      const { school } = await updateSchoolProfile(schoolId, input)
-      setForm({
-        name: school.name,
-        email: school.email ?? '',
-        phone: school.phone ?? '',
-        address: school.address ?? '',
-        landmark: school.landmark ?? '',
-        timezone: school.timezone,
-      })
-      setLogoUrl(school.logoUrl)
-      setProfileComplete(school.profileComplete)
-      setSuccess('School profile saved.')
-      await refreshSchool()
-    } catch (cause) {
-      setError(
-        cause instanceof ApiError
-          ? cause.message
-          : 'Could not save the school profile.',
-      )
-    } finally {
-      setSaving(false)
     }
   }
 
@@ -323,6 +315,14 @@ export default function SchoolProfilePage() {
                         Upload logo
                       </Button>
                     ) : null}
+                    {logoNotice ? (
+                      <p
+                        role="status"
+                        className="mt-2 text-xs font-medium text-emerald-700"
+                      >
+                        {logoNotice}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               </Panel>
@@ -343,14 +343,28 @@ export default function SchoolProfilePage() {
 
               <Panel>
                 <form
-                  onSubmit={(event) => void handleSubmit(event)}
+                  onSubmit={(event) => event.preventDefault()}
                   className="space-y-5"
                 >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-base font-bold text-gradely-text">
+                        Contact and identity
+                      </h2>
+                      <p className="mt-1 text-sm text-gradely-muted">
+                        Changes save automatically as you type and when you leave
+                        a field. Required details are validated before saving.
+                      </p>
+                    </div>
+                    <AutoSaveIndicator {...autoSave} onRetry={() => void autoSave.retry()} />
+                  </div>
+
                   <div className="grid gap-5 sm:grid-cols-2">
                     <FormField
                       label="School name"
                       value={form.name}
                       onChange={(event) => update('name', event.target.value)}
+                      onBlur={() => void autoSave.flush()}
                       required
                       minLength={2}
                       maxLength={160}
@@ -366,16 +380,18 @@ export default function SchoolProfilePage() {
                       type="email"
                       value={form.email}
                       onChange={(event) => update('email', event.target.value)}
+                      onBlur={() => void autoSave.flush()}
                       hint="Used for school office correspondence."
                     />
                     <FormField
-                      label="Ghana mobile number"
+                      label="Phone number"
                       type="tel"
                       value={form.phone}
                       onChange={(event) => update('phone', event.target.value)}
+                      onBlur={() => void autoSave.flush()}
                       maxLength={32}
                       required
-                      hint="Required on terminal reports. Example: 024 000 0000."
+                      hint="Required on terminal reports. Example: 024 000 0000 or +233 24 000 0000."
                     />
                     <FormField
                       label="Landmark"
@@ -383,6 +399,7 @@ export default function SchoolProfilePage() {
                       onChange={(event) =>
                         update('landmark', event.target.value)
                       }
+                      onBlur={() => void autoSave.flush()}
                       maxLength={200}
                       required
                       hint="A recognisable nearby place, printed on reports."
@@ -393,6 +410,7 @@ export default function SchoolProfilePage() {
                       onChange={(event) =>
                         update('timezone', event.target.value)
                       }
+                      onBlur={() => void autoSave.flush()}
                       required
                       maxLength={64}
                       hint="Pre-filled from this device. This school timezone drives academic dates and is not changed by a visitor's location."
@@ -404,24 +422,9 @@ export default function SchoolProfilePage() {
                     rows={3}
                     value={form.address}
                     onChange={(event) => update('address', event.target.value)}
+                    onBlur={() => void autoSave.flush()}
                     maxLength={400}
                   />
-
-                  {success ? (
-                    <p
-                      role="status"
-                      className="rounded-xl border border-gradely-green/30 bg-gradely-green/10 px-4 py-3 text-sm font-medium text-[#137026]"
-                    >
-                      {success}
-                    </p>
-                  ) : null}
-
-                  <div className="flex justify-end">
-                    <Button type="submit" loading={saving}>
-                      <Save aria-hidden="true" className="size-4" />
-                      Save profile
-                    </Button>
-                  </div>
                 </form>
               </Panel>
             </>

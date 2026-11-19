@@ -1,17 +1,18 @@
 import {
   ImageUp,
   RefreshCw,
-  Save,
   ShieldCheck,
   Upload,
 } from 'lucide-react'
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
 } from 'react'
+import AutoSaveIndicator from '../../components/AutoSaveIndicator'
 import FormField from '../../components/FormField'
 import {
   AccessDenied,
@@ -42,6 +43,7 @@ import type {
   ReportSettingsInput,
 } from '../../reports/types'
 import { useAcademicTerms } from '../../reports/use-academic-terms'
+import { useAutoSave } from '../../lib/use-auto-save'
 import { useSchool } from '../../schools/use-school'
 
 interface SettingsFormState {
@@ -109,7 +111,6 @@ export default function ReportSettingsPage() {
   const [form, setForm] = useState<SettingsFormState>({ ...EMPTY_FORM })
   const [assets, setAssets] = useState<ReportAsset[]>([])
   const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState<ReportAssetKind | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
@@ -164,6 +165,38 @@ export default function ReportSettingsPage() {
     void loadSettings()
   }, [loadSettings])
 
+  const settingsInput = useMemo<ReportSettingsInput | null>(() => {
+    if (!selected) return null
+
+    return {
+      academicYearId: selected.yearId,
+      academicTermId: selected.termId,
+      headteacherLabel: form.headteacherLabel.trim(),
+      rankingEnabled: form.rankingEnabled,
+      tiePolicy: form.tiePolicy,
+      aggregatePolicy: form.aggregatePolicy,
+      attendanceRequired: form.attendanceRequired,
+      closingDate: form.closingDate || null,
+      reopeningDate: form.reopeningDate || null,
+      emblemAssetId: form.emblemAssetId || null,
+      crestAssetId: form.crestAssetId || null,
+      signatureAssetId: form.signatureAssetId || null,
+    }
+  }, [form, selected])
+
+  const autoSave = useAutoSave<ReportSettingsInput | null>({
+    value: settingsInput,
+    enabled:
+      Boolean(schoolId && selected && isAdmin) && !loading && !termsLoading,
+    canSave: settingsInput !== null,
+    save: async (input) => {
+      if (!schoolId || !input) return
+
+      const response = await updateReportSettings(schoolId, input)
+      setSettings(response.settings)
+    },
+  })
+
   if (!isAdmin) {
     return (
       <AccessDenied message="Only a school administrator can configure report cards, branding and signature settings." />
@@ -207,7 +240,9 @@ export default function ReportSettingsPage() {
             : 'signatureAssetId'
       patchForm({ [key]: response.asset.id })
       await loadAssets()
-      setSuccess(`${ASSET_LABELS[kind]} uploaded. Save settings to attach it.`)
+      setSuccess(
+        `${ASSET_LABELS[kind]} uploaded. It is attached and saved automatically.`,
+      )
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -216,41 +251,6 @@ export default function ReportSettingsPage() {
       )
     } finally {
       setUploading(null)
-    }
-  }
-
-  async function handleSave() {
-    if (!schoolId || !selected) return
-
-    try {
-      setSaving(true)
-      setError(null)
-      setSuccess(null)
-      const response = await updateReportSettings(schoolId, {
-        academicYearId: selected.yearId,
-        academicTermId: selected.termId,
-        headteacherLabel: form.headteacherLabel.trim(),
-        rankingEnabled: form.rankingEnabled,
-        tiePolicy: form.tiePolicy,
-        aggregatePolicy: form.aggregatePolicy,
-        attendanceRequired: form.attendanceRequired,
-        closingDate: form.closingDate || null,
-        reopeningDate: form.reopeningDate || null,
-        emblemAssetId: form.emblemAssetId || null,
-        crestAssetId: form.crestAssetId || null,
-        signatureAssetId: form.signatureAssetId || null,
-      })
-      setSettings(response.settings)
-      setForm(formFromSettings(response.settings))
-      setSuccess('Report settings saved for this term.')
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Could not save report settings.',
-      )
-    } finally {
-      setSaving(false)
     }
   }
 
@@ -441,6 +441,7 @@ export default function ReportSettingsPage() {
                 onChange={(event) =>
                   patchForm({ headteacherLabel: event.target.value })
                 }
+                onBlur={() => void autoSave.flush()}
                 maxLength={80}
                 hint="Defaults to HEADMASTER'S SIGNATURE."
               />
@@ -490,6 +491,7 @@ export default function ReportSettingsPage() {
                   onChange={(event) =>
                     patchForm({ closingDate: event.target.value })
                   }
+                  onBlur={() => void autoSave.flush()}
                 />
                 <FormField
                   label="Reopening date"
@@ -498,6 +500,7 @@ export default function ReportSettingsPage() {
                   onChange={(event) =>
                     patchForm({ reopeningDate: event.target.value })
                   }
+                  onBlur={() => void autoSave.flush()}
                 />
               </div>
 
@@ -542,12 +545,13 @@ export default function ReportSettingsPage() {
 
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-5">
               <p className="text-xs text-gradely-muted">
-                Saving settings does not generate or release any report card.
+                Changes save automatically as you edit. Saving settings does not
+                generate or release any report card.
               </p>
-              <Button onClick={() => void handleSave()} loading={saving}>
-                <Save aria-hidden="true" className="size-4" />
-                Save report settings
-              </Button>
+              <AutoSaveIndicator
+                {...autoSave}
+                onRetry={() => void autoSave.retry()}
+              />
             </div>
           </Panel>
         </>

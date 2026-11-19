@@ -409,7 +409,6 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
           firstName: 'Class',
           lastName: 'Teacher',
           email: classTeacherEmail,
-          initialPassword: TEST_PASSWORD,
         },
       })
     expect(classTeacher.status).toBe(201)
@@ -421,7 +420,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     trackUser(registered.teacher.userId)
     await prisma.user.update({
       where: { id: registered.teacher.userId },
-      data: { mustChangePassword: false },
+      data: {
+        passwordHash: await hashPassword(TEST_PASSWORD),
+        mustChangePassword: false,
+      },
     })
 
     fixture = {
@@ -531,7 +533,6 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
           firstName: 'Subject',
           lastName: 'Registrar',
           email,
-          initialPassword: TEST_PASSWORD,
         },
       })
     expect(response.status).toBe(201)
@@ -545,7 +546,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     // by dedicated route tests.
     await prisma.user.update({
       where: { id: registered.teacher.userId },
-      data: { mustChangePassword: false },
+      data: {
+        passwordHash: await hashPassword(TEST_PASSWORD),
+        mustChangePassword: false,
+      },
     })
 
     const ctAgent = await login(email)
@@ -620,7 +624,6 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
           firstName: 'Retry',
           lastName: 'Registrar',
           email: retryEmail,
-          initialPassword: TEST_PASSWORD,
         },
       })
     expect(retry.status).toBe(201)
@@ -631,7 +634,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     trackUser(retryRegistered.teacher.userId)
     await prisma.user.update({
       where: { id: retryRegistered.teacher.userId },
-      data: { mustChangePassword: false },
+      data: {
+        passwordHash: await hashPassword(TEST_PASSWORD),
+        mustChangePassword: false,
+      },
     })
 
     const retryAgent = await login(retryEmail)
@@ -666,7 +672,6 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
           firstName: 'Invite',
           lastName: 'Class',
           email: classTeacherEmail,
-          initialPassword: TEST_PASSWORD,
         },
       })
     expect(registration.status).toBe(201)
@@ -677,7 +682,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     trackUser(registered.teacher.userId)
     await prisma.user.update({
       where: { id: registered.teacher.userId },
-      data: { mustChangePassword: false },
+      data: {
+        passwordHash: await hashPassword(TEST_PASSWORD),
+        mustChangePassword: false,
+      },
     })
 
     const ctAgent = await login(classTeacherEmail)
@@ -738,7 +746,7 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     const invalid = await request(app)
       .post('/api/auth/subject-teacher/access-code')
       .set('Origin', TEST_ORIGIN)
-      .send({ code: `${firstCode}invalid` })
+      .send({ code: '9999Qqq' })
     expect(invalid.status).toBe(401)
 
     // Reissuing invalidates the previous code.
@@ -927,8 +935,7 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
             firstName: 'Concurrent',
             lastName: 'First',
             email: firstEmail,
-            initialPassword: TEST_PASSWORD,
-          },
+            },
         }),
       admin
         .post(`/api/schools/${fixture.schoolId}/classes/register`)
@@ -939,8 +946,7 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
             firstName: 'Concurrent',
             lastName: 'Second',
             email: secondEmail,
-            initialPassword: TEST_PASSWORD,
-          },
+            },
         }),
     ])
 

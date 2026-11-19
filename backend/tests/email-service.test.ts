@@ -83,7 +83,7 @@ class MemoryOutboxStore implements EmailOutboxStore {
       payload: input.payload,
       status: 'PENDING',
       attempts: 0,
-      nextAttemptAt: new Date(),
+      nextAttemptAt: new Date(0),
       lastErrorCode: null,
       sentAt: null,
       createdAt: new Date(),

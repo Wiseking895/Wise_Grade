@@ -120,7 +120,34 @@ describe('POST /api/auth/register-school', () => {
 
     expect(duplicate.status).toBe(409)
     expect(duplicate.body.error.message).toBe(
-      'An account with this email already exists',
+      'An account with this email address already exists',
+    )
+    expect(repository.schools.size).toBe(1)
+    expect(repository.users.size).toBe(1)
+  })
+
+  it('rejects a duplicate phone number across different accounts', async () => {
+    await request(app)
+      .post('/api/auth/register-school')
+      .set('Origin', TEST_ORIGIN)
+      .send(
+        registrationBody({ email: 'first@example.com', phone: '024 111 1111' }),
+      )
+
+    const duplicate = await request(app)
+      .post('/api/auth/register-school')
+      .set('Origin', TEST_ORIGIN)
+      .send(
+        registrationBody({
+          schoolName: 'Second School',
+          email: 'second@example.com',
+          phone: '+233 24 111 1111',
+        }),
+      )
+
+    expect(duplicate.status).toBe(409)
+    expect(duplicate.body.error.message).toBe(
+      'An account with this phone number already exists',
     )
     expect(repository.schools.size).toBe(1)
     expect(repository.users.size).toBe(1)

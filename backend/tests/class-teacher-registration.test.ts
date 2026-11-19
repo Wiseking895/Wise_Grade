@@ -38,7 +38,6 @@ function teacherPayload(overrides: Record<string, unknown> = {}) {
     lastName: 'Mensah',
     email: 'ama.mensah@greenvalley.test',
     phone: null,
-    initialPassword: TEACHER_PASSWORD,
     ...overrides,
   }
 }
@@ -181,7 +180,13 @@ describe('class-teacher registration', () => {
       phone: '+233240000000',
     })
 
-    // The same normalized values are what the teacher signs in with.
+    // The same normalized values are what the teacher signs in with. The
+    // server generated the onboarding password, so the suite gives the account
+    // a known test password before checking the normalized login email.
+    await ctx.auth.setPasswordForTesting(
+      'ama.mensah@greenvalley.test',
+      TEACHER_PASSWORD,
+    )
     const { response: loginResponse } = await login(
       ctx.app,
       ' AMA.MENSAH@greenvalley.test ',
@@ -200,7 +205,7 @@ describe('class-teacher registration', () => {
     )
   })
 
-  it('names every missing teacher field without leaking the password', async () => {
+  it('names every missing teacher field without leaking a password', async () => {
     const response = await register({ className: 'Basic 1', teacher: {} })
 
     expect(response.status).toBe(400)
@@ -209,13 +214,12 @@ describe('class-teacher registration', () => {
         'teacher.firstName',
         'teacher.lastName',
         'teacher.email',
-        'teacher.initialPassword',
       ]),
     )
 
     const body = JSON.stringify(response.body)
     expect(body).not.toMatch(/at\s+\w+\s+\(|node_modules|prisma|select\s/i)
-    expect(body).not.toContain('password')
+    expect(body).not.toMatch(/password/i)
   })
 
   it('rejects an invalid academic year identifier before any lookup', async () => {
@@ -262,6 +266,10 @@ describe('class-teacher registration', () => {
 
     // A class teacher cannot register another class teacher.
     await register()
+    await ctx.auth.setPasswordForTesting(
+      'ama.mensah@greenvalley.test',
+      TEACHER_PASSWORD,
+    )
     const { agent } = await login(
       ctx.app,
       'ama.mensah@greenvalley.test',
@@ -358,7 +366,6 @@ describe('class-teacher registration', () => {
         phone: '+233 (0)20 000 0000',
         role: 'CLASS_TEACHER',
         className: 'Basic 3',
-        initialPassword: TEST_PASSWORD,
       })
 
     expect(response.status).toBe(201)
@@ -379,7 +386,6 @@ describe('class-teacher registration', () => {
         email: 'yaa.asante@greenvalley.test',
         role: 'SUBJECT_TEACHER',
         className: 'Basic 3',
-        initialPassword: TEST_PASSWORD,
       })
 
     expect(response.status).toBe(400)
@@ -391,6 +397,10 @@ describe('class-teacher registration', () => {
     expect(registration.status).toBe(201)
 
     const classId = registration.body.data.class.id as string
+    await ctx.auth.setPasswordForTesting(
+      'ama.mensah@greenvalley.test',
+      TEACHER_PASSWORD,
+    )
     const { agent } = await login(
       ctx.app,
       'ama.mensah@greenvalley.test',

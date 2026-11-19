@@ -47,11 +47,6 @@ const dateString = z
     message: 'Enter a valid date',
   })
 
-const password = z
-  .string()
-  .min(10, 'Password must be at least 10 characters')
-  .max(128, 'Password must be 128 characters or fewer')
-
 const personName = z
   .string()
   .trim()
@@ -385,7 +380,6 @@ export const registerClassWithTeacherSchema = z
         lastName: personName,
         email: teacherEmail,
         phone: optionalGhanaMobile,
-        initialPassword: password,
       })
       .strict(),
   })
@@ -400,7 +394,6 @@ export const registerTeacherSchema = z
     // The corrected workflow allows the school administrator to register only
     // class teachers. Subject teachers are invited by the class teacher.
     role: z.literal('CLASS_TEACHER'),
-    initialPassword: password,
     // A class teacher is created together with (or attached to) their class.
     // The client may send either the supported class name or an existing id.
     className: optionalText(80),

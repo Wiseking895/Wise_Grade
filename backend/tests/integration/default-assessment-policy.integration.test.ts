@@ -387,7 +387,6 @@ describe.skipIf(!runIntegration)(
           lastName: 'Teacher',
           email: classTeacherEmail,
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Basic 1',
         })
       expect(classTeacherResponse.status).toBe(201)
@@ -397,7 +396,10 @@ describe.skipIf(!runIntegration)(
       trackUser(classTeacherUserId)
       await prisma.user.update({
         where: { id: classTeacherUserId },
-        data: { mustChangePassword: false },
+        data: {
+          passwordHash: await hashPassword(TEST_PASSWORD),
+          mustChangePassword: false,
+        },
       })
 
       const earlyTeacherResponse = await admin
@@ -408,7 +410,6 @@ describe.skipIf(!runIntegration)(
           lastName: 'Teacher',
           email: earlyTeacherEmail,
           role: 'CLASS_TEACHER',
-          initialPassword: TEST_PASSWORD,
           className: 'Creche',
         })
       expect(earlyTeacherResponse.status).toBe(201)
@@ -418,7 +419,10 @@ describe.skipIf(!runIntegration)(
       trackUser(earlyTeacherUserId)
       await prisma.user.update({
         where: { id: earlyTeacherUserId },
-        data: { mustChangePassword: false },
+        data: {
+          passwordHash: await hashPassword(TEST_PASSWORD),
+          mustChangePassword: false,
+        },
       })
 
       classTeacher = request.agent(app)

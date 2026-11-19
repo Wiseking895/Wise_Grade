@@ -173,39 +173,82 @@ export function pupilPhotoStorageKey(
 }
 
 const GHANA_MOBILE_NATIONAL = /^[235]\d{8}$/
+/** E.164 allows at most 15 digits including the country code. */
+const E164 = /^\+[1-9]\d{7,14}$/
 
 /**
- * Normalizes a Ghana mobile number to the canonical +233XXXXXXXXX form.
- * Accepts local (0XXXXXXXXX), international (+233 / 233) and lightly
- * punctuated input. Throws for numbers that are not Ghana mobile numbers.
+ * Normalizes a phone number to a single canonical international form.
+ *
+ * Ghanaian numbers are the primary case and are converted to
+ * `+233XXXXXXXXX`. International numbers must be supplied with a leading `+`
+ * (or `00`) so the country code is unambiguous; a bare national number is
+ * treated as Ghanaian. The function throws for anything that cannot be
+ * represented safely in E.164, which is the only value stored.
  */
-export function normalizeGhanaMobile(value: string): string {
+export function normalizePhoneNumber(value: string): string {
   const cleaned = value.trim().replace(/[\s().-]/g, '')
 
-  let national = cleaned
+  if (cleaned === '') {
+    throw new Error('Enter a valid phone number')
+  }
 
-  if (national.startsWith('+233')) {
-    national = national.slice(4)
-  } else if (national.startsWith('00233')) {
-    national = national.slice(5)
-  } else if (national.startsWith('233')) {
+  // `00` is the common alternative international dialling prefix.
+  const international = cleaned.startsWith('00')
+    ? `+${cleaned.slice(2)}`
+    : cleaned
+
+  // Ghanaian input, including the common "+233 (0)24 000 0000" style where the
+  // national trunk zero survives next to the country code.
+  if (international.startsWith('+233')) {
+    let national = international.slice(4)
+
+    if (national.startsWith('0')) {
+      national = national.slice(1)
+    }
+
+    if (!GHANA_MOBILE_NATIONAL.test(national)) {
+      throw new Error(
+        'Enter a valid phone number, e.g. 024 000 0000 or +233 24 000 0000',
+      )
+    }
+
+    return `+233${national}`
+  }
+
+  if (international.startsWith('+')) {
+    if (!E164.test(international)) {
+      throw new Error('Enter a valid phone number')
+    }
+    return international
+  }
+
+  // Ghanaian national forms: 0240000000, 233240000000, 240000000.
+  let national = international
+
+  if (national.startsWith('233')) {
     national = national.slice(3)
   }
 
-  // Ghanaians commonly write the country code followed by the national number
-  // that still carries its trunk 0, for example "+233 (0)24 000 0000". Strip
-  // that single leading 0 so the same number is accepted however it is written.
-  // Local numbers ("024 000 0000") take the same path.
+  // Local numbers ("024 000 0000") and numbers still carrying the trunk zero
+  // after a country code take the same path.
   if (national.startsWith('0')) {
     national = national.slice(1)
   }
 
   if (!GHANA_MOBILE_NATIONAL.test(national)) {
-    throw new Error('Enter a valid Ghana mobile number')
+    throw new Error(
+      'Enter a valid phone number, e.g. 024 000 0000 or +233 24 000 0000',
+    )
   }
 
   return `+233${national}`
 }
+
+/**
+ * Backwards-compatible alias. Existing callers and tests use this name; every
+ * caller now receives the broader canonical phone handling above.
+ */
+export const normalizeGhanaMobile = normalizePhoneNumber
 
 export interface SchoolIdentityFields {
   logoObjectKey: string | null

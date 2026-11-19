@@ -10,6 +10,7 @@ import type {
   ClassDashboardClass,
   ClassTeacherAssignment,
   IssuedSubjectTeacherInvitation,
+  OnboardingEmailStatus,
   PupilDetail,
   PupilInput,
   PupilListResult,
@@ -321,6 +322,26 @@ export function registerTeacher(
     method: 'POST',
     body: input,
   })
+}
+
+/**
+ * Issues a fresh temporary password for a class teacher and emails it once.
+ * The password is never returned to the caller.
+ */
+export function resendTeacherCredentials(
+  schoolId: string,
+  membershipId: string,
+) {
+  return apiRequest<{
+    teacher: Teacher
+    onboardingEmail: OnboardingEmailStatus
+  }>(
+    schoolPath(
+      schoolId,
+      `/teachers/${encodeURIComponent(membershipId)}/resend-credentials`,
+    ),
+    { method: 'POST' },
+  )
 }
 
 export function listTeacherAssignments(schoolId: string) {

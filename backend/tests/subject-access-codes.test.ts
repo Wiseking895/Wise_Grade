@@ -89,12 +89,12 @@ describe('subject teacher access codes', () => {
           firstName: 'Class',
           lastName: 'Teacher',
           email: 'ct@access-codes.test',
-          initialPassword: TEACHER_PASSWORD,
         },
       })
 
     expect(classRegistration.status).toBe(201)
     classId = classRegistration.body.data.class.id as string
+    await auth.setPasswordForTesting('ct@access-codes.test', TEACHER_PASSWORD)
     classTeacher = await login('ct@access-codes.test')
   })
 
@@ -139,6 +139,9 @@ describe('subject teacher access codes', () => {
 
     // The plaintext code is returned once and emailed to the subject teacher.
     expect(invitation.code).toBeTruthy()
+    // Exact DDDDUll shape: four digits, one uppercase and two lowercase letters.
+    expect(invitation.code).toMatch(/^\d{4}[A-Z][a-z]{2}$/)
+    expect(invitation.code).toHaveLength(7)
     const assignment = email.last('subject-assignment')
     expect(assignment).toBeDefined()
     expect(assignment?.to).toBe('subject@access-codes.test')
@@ -162,6 +165,14 @@ describe('subject teacher access codes', () => {
       subjectId: invitation.subjectId,
     })
     expect(auth.auditActions()).toContain('SUBJECT_TEACHER_ACCESS_CODE_USED')
+
+    // A teacher may type the letters in any case; the canonical form is used
+    // for the hash, so the same code still opens the workspace.
+    const upperCaseEntry = await enterCode(
+      request.agent(app),
+      invitation.code.toUpperCase(),
+    )
+    expect(upperCaseEntry.status).toBe(200)
   })
 
   it('sets a seven-day expiry and rejects the code afterwards', async () => {
@@ -189,7 +200,10 @@ describe('subject teacher access codes', () => {
   })
 
   it('rejects an invalid or revoked code', async () => {
-    const invalid = await enterCode(request.agent(app), 'x'.repeat(32))
+    const malformed = await enterCode(request.agent(app), 'not-a-code')
+    expect(malformed.status).toBe(400)
+
+    const invalid = await enterCode(request.agent(app), '0000Zzz')
     expect(invalid.status).toBe(401)
 
     const invitation = await assignSubject(classTeacher)
@@ -250,13 +264,16 @@ describe('subject teacher access codes', () => {
           firstName: 'Other',
           lastName: 'Teacher',
           email: 'other-ct@access-codes.test',
-          initialPassword: TEACHER_PASSWORD,
         },
       })
     expect(secondClass.status).toBe(201)
 
     // Seed the second class profile, then sign in as its class teacher.
     const otherClassId = secondClass.body.data.class.id as string
+    await auth.setPasswordForTesting(
+      'other-ct@access-codes.test',
+      TEACHER_PASSWORD,
+    )
     const otherTeacher = await login('other-ct@access-codes.test')
 
     const list = await otherTeacher.get(

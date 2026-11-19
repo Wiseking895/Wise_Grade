@@ -142,7 +142,8 @@ model User {
   firstName       String    @db.VarChar(80)
   lastName        String    @db.VarChar(80)
   /// Optional contact number supplied when a teacher is invited or registered.
-  phone           String?   @db.VarChar(32)
+  /// Stored as canonical E.164 and unique across every user account.
+  phone           String?   @unique @db.VarChar(32)
   isPlatformAdmin Boolean   @default(false)
   isActive        Boolean   @default(true)
   lastLoginAt     DateTime?

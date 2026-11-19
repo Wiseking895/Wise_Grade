@@ -113,6 +113,8 @@ export interface CreateSchoolAdminInput {
     passwordHash: string
     firstName: string
     lastName: string
+    /** Normalized contact number; unique across every user account. */
+    phone: string
   }
 }
 
@@ -214,6 +216,12 @@ export interface AuthRepository {
   createSchoolWithAdmin(input: CreateSchoolAdminInput): Promise<AuthResult>
 
   findUserByEmail(email: string): Promise<UserRecord | null>
+
+  /**
+   * Finds an account by its canonical E.164 phone number. Used to reject a
+   * second registration before the database unique index is reached.
+   */
+  findUserByPhone(phone: string): Promise<UserRecord | null>
 
   /** Persistent brute-force state; called after a failed password check. */
   registerFailedLogin(

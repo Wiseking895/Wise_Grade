@@ -665,6 +665,18 @@ export interface SchoolRepository {
     audit: AuditContext,
   ): Promise<TeacherRecord>
 
+  /**
+   * Replaces a class teacher's temporary password and revokes their existing
+   * sessions. Used by the secure resend-credentials flow; the caller generates
+   * and hashes the password and emails it once.
+   */
+  resetTeacherTemporaryPassword(
+    schoolId: string,
+    membershipId: string,
+    passwordHash: string,
+    audit: AuditContext,
+  ): Promise<TeacherRecord>
+
   listTeacherAssignments(schoolId: string): Promise<TeacherAssignments>
   listClassSubjectTeacherAssignments(
     schoolId: string,

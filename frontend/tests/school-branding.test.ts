@@ -40,8 +40,20 @@ describe('Ghana mobile validation', () => {
     assert.equal(normalizeGhanaMobile('(020) 123-4567'), '+233201234567')
   })
 
-  it('rejects numbers that are not Ghana mobile numbers', () => {
-    for (const value of ['', '12345', '024000000', '0440000000', 'nope']) {
+  it('accepts international numbers in canonical E.164 form', () => {
+    assert.equal(normalizeGhanaMobile('+1 555 010 0000'), '+15550100000')
+    assert.equal(normalizeGhanaMobile('0044 20 7946 0958'), '+442079460958')
+  })
+
+  it('rejects numbers that are neither Ghana mobile nor valid E.164', () => {
+    for (const value of [
+      '',
+      '12345',
+      '024000000',
+      '0440000000',
+      'nope',
+      '+0123456789',
+    ]) {
       assert.equal(normalizeGhanaMobile(value), null)
     }
   })
@@ -123,10 +135,10 @@ describe('school registration branding validation', () => {
     assert.equal(errors.phone, 'Mobile number is required')
   })
 
-  it('rejects an invalid Ghana mobile number', () => {
+  it('rejects an invalid phone number', () => {
     const errors = validateRegistration({ ...validValues(), phone: '12345' })
 
-    assert.match(errors.phone ?? '', /Ghana mobile number/)
+    assert.match(errors.phone ?? '', /valid phone number/)
   })
 
   it('rejects a logo with an unsupported type or excessive size', () => {

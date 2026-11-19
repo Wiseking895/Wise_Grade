@@ -6,7 +6,25 @@ import AuthLayout from '../components/AuthLayout'
 import FormField from '../components/FormField'
 import { ApiError } from '../lib/api'
 
-const MIN_ACCESS_CODE_LENGTH = 20
+const ACCESS_CODE_LENGTH = 7
+const ACCESS_CODE_PATTERN = /^\d{4}[A-Za-z]{3}$/
+
+/**
+ * Canonicalises what the teacher typed into the exact `DDDDUll` shape the
+ * server stores. Letters may be typed in any case, but the value must still be
+ * four digits followed by three letters.
+ */
+function canonicalAccessCode(value: string): string | null {
+  const compact = value.trim().replace(/\s+/g, '')
+
+  if (!ACCESS_CODE_PATTERN.test(compact)) {
+    return null
+  }
+
+  return `${compact.slice(0, 4)}${compact
+    .slice(4, 5)
+    .toUpperCase()}${compact.slice(5).toLowerCase()}`
+}
 
 /**
  * Opens a restricted subject-teacher workspace from a reusable access code.
@@ -37,17 +55,19 @@ export default function AccessCodePage() {
     setFormError(null)
     setFieldError(null)
 
-    const trimmed = code.trim()
+    const codeValue = canonicalAccessCode(code)
 
-    if (trimmed.length < MIN_ACCESS_CODE_LENGTH) {
-      setFieldError('Enter the full access code exactly as it was shared.')
+    if (!codeValue) {
+      setFieldError(
+        `Enter the ${ACCESS_CODE_LENGTH}-character access code, e.g. 4821Kmw.`,
+      )
       return
     }
 
     setSubmitting(true)
 
     try {
-      await enterAccessCode(trimmed)
+      await enterAccessCode(codeValue)
       navigate('/dashboard', { replace: true })
     } catch (error) {
       setFormError(
@@ -97,12 +117,20 @@ export default function AccessCodePage() {
           label="Access code"
           name="code"
           autoComplete="off"
+          autoCapitalize="none"
+          autoCorrect="off"
           spellCheck={false}
           required
+          maxLength={ACCESS_CODE_LENGTH}
           value={code}
           error={fieldError ?? undefined}
-          hint="The code stays valid until your class teacher regenerates or revokes it. It is not a password."
-          onChange={(event) => setCode(event.target.value)}
+          hint={`${ACCESS_CODE_LENGTH} characters: 4 digits followed by 3 letters, e.g. 4821Kmw. Letter case does not matter.`}
+          onChange={(event) => {
+            setCode(event.target.value)
+            if (fieldError) {
+              setFieldError(null)
+            }
+          }}
         />
 
         <button

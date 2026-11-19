@@ -4,7 +4,6 @@ import {
   Lock,
   Printer,
   RefreshCw,
-  Save,
   Send,
   Table2,
 } from 'lucide-react'
@@ -18,6 +17,7 @@ import {
   type KeyboardEvent,
 } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import AutoSaveIndicator from '../../components/AutoSaveIndicator'
 import {
   Badge,
   Button,
@@ -66,6 +66,7 @@ import type {
 import { getClassDashboard, listAcademicYears } from '../../schools/api'
 import type { AcademicYear, ClassDashboardClass } from '../../schools/types'
 import { ApiError, type ApiFieldError } from '../../lib/api'
+import { useAutoSave } from '../../lib/use-auto-save'
 import { useSchool } from '../../schools/use-school'
 import { useAuth } from '../../auth/use-auth'
 
@@ -130,7 +131,6 @@ export default function ScoreEntryPage() {
   const [errorDetails, setErrorDetails] = useState<ApiFieldError[]>([])
   const [success, setSuccess] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
-  const [saving, setSaving] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [discardOpen, setDiscardOpen] = useState(false)
   const [submitOpen, setSubmitOpen] = useState(false)
@@ -444,6 +444,48 @@ export default function ScoreEntryPage() {
     void loadView()
   }, [loadView])
 
+  const valuesRef = useRef(values)
+  const viewRef = useRef(view)
+
+  useEffect(() => {
+    valuesRef.current = values
+  }, [values])
+
+  useEffect(() => {
+    viewRef.current = view
+  }, [view])
+
+  const autoSave = useAutoSave<ScoreValues>({
+    value: values,
+    enabled: Boolean(schoolId && view && !loading && !editsDisabled),
+    canSave: Boolean(view),
+    save: async (snapshot) => {
+      const currentView = viewRef.current
+
+      if (!schoolId || !currentView) return
+
+      const input = buildInput(snapshot, currentView)
+
+      if (!input) return
+
+      const response = await saveScoreDraft(schoolId, input)
+      // Publish the new version to both the render tree and the ref used by a
+      // queued follow-up save, so the next request cannot send a stale
+      // expectedVersion while React is still rendering.
+      viewRef.current = response.scoreEntry
+      setView(response.scoreEntry)
+      setError(null)
+      setErrorDetails([])
+
+      // If the teacher kept typing while the draft was in flight, keep the
+      // newer local values. The engine immediately queues a follow-up save
+      // using the refreshed submission version.
+      if (JSON.stringify(snapshot) === JSON.stringify(valuesRef.current)) {
+        setDirty(false)
+      }
+    },
+  })
+
   useEffect(() => {
     if (!dirty) return
 
@@ -513,59 +555,24 @@ export default function ScoreEntryPage() {
     setSuccess(null)
   }
 
-  function buildInput() {
-    if (!view) return null
+  function buildInput(
+    nextValues: ScoreValues = values,
+    nextView: ScoreEntryView | null = view,
+  ) {
+    if (!nextView) return null
 
     return {
       academicTermId: termId,
       classId,
       subjectId,
-      expectedVersion: view.submission?.version ?? 0,
-      pupils: view.pupils.map((pupil) => ({
+      expectedVersion: nextView.submission?.version ?? 0,
+      pupils: nextView.pupils.map((pupil) => ({
         pupilId: pupil.pupilId,
-        scores: view.policy!.components.map((component) => ({
+        scores: nextView.policy!.components.map((component) => ({
           componentId: component.id,
-          score: normalizeScore(values[pupil.pupilId]?.[component.id]),
+          score: normalizeScore(nextValues[pupil.pupilId]?.[component.id]),
         })),
       })),
-    }
-  }
-
-  async function save() {
-    if (!schoolId || readOnly) return
-
-    const input = buildInput()
-
-    if (!input) return
-
-    setSaving(true)
-    setError(null)
-    setErrorDetails([])
-    setSuccess(null)
-
-    try {
-      const response = await saveScoreDraft(schoolId, input)
-      setView(response.scoreEntry)
-      setValues(valuesFromView(response.scoreEntry))
-      setDirty(false)
-      setSuccess(
-        response.scoreEntry.submission?.status === 'DRAFT'
-          ? 'Draft saved. Missing cells remain unfilled and are not treated as zero.'
-          : 'Draft saved.',
-      )
-    } catch (cause) {
-      setErrorDetails(
-        cause instanceof ApiError && Array.isArray(cause.details)
-          ? cause.details
-          : [],
-      )
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Could not save the draft.',
-      )
-    } finally {
-      setSaving(false)
     }
   }
 
@@ -653,7 +660,9 @@ export default function ScoreEntryPage() {
       return next
     })
     setDirty(true)
-    setSuccess('Pasted values into the register. Review them, then save the draft.')
+    setSuccess(
+      'Pasted values into the register. They save automatically; review the marks before submitting.',
+    )
   }
 
   function handleCellKeyDown(
@@ -663,7 +672,7 @@ export default function ScoreEntryPage() {
   ) {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault()
-      if (!editsDisabled && !saving && !submitting) void save()
+      if (!editsDisabled && !submitting) void autoSave.flush()
       return
     }
 
@@ -688,7 +697,9 @@ export default function ScoreEntryPage() {
     !readOnly &&
     Boolean(localReadiness?.canSubmit) &&
     !locked &&
-    !saving &&
+    !autoSave.hasPendingChanges &&
+    autoSave.status !== 'saving' &&
+    autoSave.status !== 'error' &&
     !submitting
 
   return (
@@ -753,22 +764,10 @@ export default function ScoreEntryPage() {
               variant="secondary"
               size="sm"
               onClick={() => setDiscardOpen(true)}
-              disabled={!dirty || saving || submitting}
+              disabled={!dirty || submitting || autoSave.status === 'saving'}
             >
               <RefreshCw aria-hidden="true" className="size-4" />
               Reload
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void save()}
-              loading={saving}
-              disabled={
-                editsDisabled || submitting || view.pupils.length === 0
-              }
-            >
-              <Save aria-hidden="true" className="size-4" />
-              Save draft
             </Button>
             <Button
               size="sm"
@@ -787,8 +786,11 @@ export default function ScoreEntryPage() {
               <Printer aria-hidden="true" className="size-4" />
               Print register
             </Button>
-            <span className="ml-auto text-xs text-gradely-muted">
-              {dirty ? 'Unsaved changes' : 'All changes saved'}
+            <span className="ml-auto">
+              <AutoSaveIndicator
+                {...autoSave}
+                onRetry={() => void autoSave.retry()}
+              />
             </span>
           </div>
         ) : null}
@@ -1021,14 +1023,15 @@ export default function ScoreEntryPage() {
                     <p className="mt-1 text-xs leading-relaxed text-gradely-muted">
                       {readOnly
                         ? `Read-only: ${subjectTeacherName ?? 'the assigned subject teacher'} owns this sheet. Review the saved scores, components and submission status only.`
-                        : 'Tab moves across the register. Enter or the up/down arrow keys move down a column; Shift+Enter moves up. Ctrl+Enter saves a draft. Paste tab-separated values from a spreadsheet to fill several pupils at once.'}
+                        : 'Tab moves across the register. Enter or the up/down arrow keys move down a column; Shift+Enter moves up. Ctrl+Enter saves immediately; otherwise drafts save automatically. Paste tab-separated values from a spreadsheet to fill several pupils at once.'}
                     </p>
                   </div>
                   <div className="shrink-0 text-xs text-gradely-muted sm:text-right">
-                    <p className="font-semibold text-gradely-text">
-                      {dirty ? 'Unsaved changes' : 'All changes saved'}
-                    </p>
-                    <p>
+                    <AutoSaveIndicator
+                      {...autoSave}
+                      onRetry={() => void autoSave.retry()}
+                    />
+                    <p className="mt-1">
                       {localReadiness?.completePupils ?? 0}/
                       {view.pupils.length} complete
                     </p>
@@ -1338,6 +1341,7 @@ export default function ScoreEntryPage() {
                                         event.target.value,
                                       )
                                     }
+                                    onBlur={() => void autoSave.flush()}
                                     onFocus={(event) =>
                                       event.currentTarget.select()
                                     }
@@ -1442,6 +1446,7 @@ export default function ScoreEntryPage() {
                                         event.target.value,
                                       )
                                     }
+                                    onBlur={() => void autoSave.flush()}
                                     onFocus={(event) =>
                                       event.currentTarget.select()
                                     }

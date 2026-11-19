@@ -511,11 +511,11 @@ describe('pupil photograph management', () => {
         lastName: 'Teacher',
         email,
         role: 'CLASS_TEACHER',
-        initialPassword: TEST_PASSWORD,
         className,
       })
     expect(response.status).toBe(201)
 
+    await auth.setPasswordForTesting(email, TEST_PASSWORD)
     const agent = request.agent(app)
     const login = await agent
       .post('/api/auth/login')

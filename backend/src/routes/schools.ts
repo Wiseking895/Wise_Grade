@@ -1,8 +1,9 @@
 import { Router, type Request, type RequestHandler } from 'express'
+import { randomUUID } from 'node:crypto'
 import type { MembershipRecord } from '../auth/repository.js'
 import type { AuthRepository } from '../auth/repository.js'
 import { toPublicMembership, toPublicSchool } from '../auth/presenter.js'
-import { hashPassword } from '../auth/password.js'
+import { generateTemporaryPassword, hashPassword } from '../auth/password.js'
 import { parseBody } from '../auth/validation.js'
 import { HttpError } from '../errors/http-error.js'
 import { createAuthenticate } from '../middleware/authenticate.js'
@@ -161,6 +162,16 @@ export function createSchoolsRouter(
       `${req.auth?.user.id ?? req.ip ?? 'unknown'}|${req.params.classId ?? 'class'}`,
   })
 
+  // Replacement credentials are security-sensitive and generate a new
+  // password, so an administrator cannot loop the action.
+  const credentialReissueLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    scope: 'teacher credential reissue',
+    keyGenerator: (req) =>
+      `${req.auth?.user.id ?? req.ip ?? 'unknown'}|${req.params.membershipId ?? 'teacher'}`,
+  })
+
   async function schoolDisplayName(schoolId: string): Promise<string> {
     try {
       const profile = await schoolRepository.getSchoolProfile(schoolId)
@@ -170,24 +181,50 @@ export function createSchoolsRouter(
     }
   }
 
+  /** Best-effort class label for a reissued credentials email. */
+  async function classTeacherClassName(
+    schoolId: string,
+    membershipId: string,
+  ): Promise<string> {
+    try {
+      const assignments =
+        await schoolRepository.listTeacherAssignments(schoolId)
+      const match = assignments.classTeachers.find(
+        (assignment) =>
+          assignment.membershipId === membershipId &&
+          assignment.endedAt === null,
+      )
+
+      return match?.className ?? 'your assigned class'
+    } catch {
+      return 'your assigned class'
+    }
+  }
+
   /**
-   * Emails a newly created class teacher their login details. Only called when
-   * the account did not already exist, so an admin-supplied password is never
-   * presented as valid for an existing user whose password was left unchanged.
+   * Emails a newly created or reissued class teacher their login details.
+   *
+   * Returns the real dispatch outcome so the route never claims an email was
+   * delivered when it was not. The password is included only in the rendered
+   * message; it is never logged, returned to the client or written to the
+   * outbox payload (the template is on the redaction list).
    */
   async function sendTeacherCredentials(input: {
     schoolId: string
     teacher: TeacherRecord
     className: string
     temporaryPassword: string
-  }): Promise<void> {
+  }): Promise<'sent' | 'queued' | 'not_sent'> {
     try {
       const schoolName = await schoolDisplayName(input.schoolId)
 
-      await email.send({
+      const result = await email.send({
         template: 'teacher-credentials',
         to: input.teacher.email,
-        dedupeKey: `teacher-credentials:${input.teacher.membershipId}`,
+        // A fresh key lets an explicit reissue send again after a failed or
+        // already-sent onboarding message without colliding with the outbox
+        // dedupe constraint.
+        dedupeKey: `teacher-credentials:${input.teacher.membershipId}:${randomUUID()}`,
         data: {
           firstName: input.teacher.firstName,
           schoolName,
@@ -197,8 +234,19 @@ export function createSchoolsRouter(
           loginUrl: loginUrl(),
         },
       })
+
+      if (result.status === 'sent') {
+        return 'sent'
+      }
+
+      if (result.status === 'queued') {
+        return 'queued'
+      }
+
+      return 'not_sent'
     } catch {
       console.error('[gradely-api] could not email class teacher credentials')
+      return 'not_sent'
     }
   }
 
@@ -882,7 +930,10 @@ export function createSchoolsRouter(
     try {
       const access = requireAccess(req)
       const input = parseBody(registerClassWithTeacherSchema, req.body)
-      const passwordHash = await hashPassword(input.teacher.initialPassword)
+      // The server owns the temporary password. The administrator never sees,
+      // types or receives it; only the teacher's onboarding email contains it.
+      const temporaryPassword = generateTemporaryPassword()
+      const passwordHash = await hashPassword(temporaryPassword)
       const existingUser = await authRepository.findUserByEmail(input.teacher.email)
 
       const result = await schoolRepository.registerClassWithTeacher(
@@ -906,16 +957,16 @@ export function createSchoolsRouter(
       // The temporary password is only valid when this registration created the
       // account. Re-assigning an existing account must never email a password
       // the user did not just receive.
-      if (!existingUser) {
-        await sendTeacherCredentials({
-          schoolId: access.schoolId,
-          teacher: result.teacher,
-          className: result.class.name,
-          temporaryPassword: input.teacher.initialPassword,
-        })
-      }
+      const onboardingEmail = existingUser
+        ? 'not_sent'
+        : await sendTeacherCredentials({
+            schoolId: access.schoolId,
+            teacher: result.teacher,
+            className: result.class.name,
+            temporaryPassword,
+          })
 
-      res.status(201).json({ data: result })
+      res.status(201).json({ data: { ...result, onboardingEmail } })
     } catch (error) {
       next(error)
     }
@@ -1544,7 +1595,8 @@ export function createSchoolsRouter(
     try {
       const access = requireAccess(req)
       const input = parseBody(registerTeacherSchema, req.body)
-      const passwordHash = await hashPassword(input.initialPassword)
+      const temporaryPassword = generateTemporaryPassword()
+      const passwordHash = await hashPassword(temporaryPassword)
       const existingUser = await authRepository.findUserByEmail(input.email)
       const teacher = await schoolRepository.registerTeacher(
         access.schoolId,
@@ -1561,20 +1613,60 @@ export function createSchoolsRouter(
         auditContext(req),
       )
 
-      if (!existingUser && input.role === 'CLASS_TEACHER') {
-        await sendTeacherCredentials({
-          schoolId: access.schoolId,
-          teacher,
-          className: input.className || 'your assigned class',
-          temporaryPassword: input.initialPassword,
-        })
-      }
+      const onboardingEmail = existingUser
+        ? 'not_sent'
+        : input.role === 'CLASS_TEACHER'
+          ? await sendTeacherCredentials({
+              schoolId: access.schoolId,
+              teacher,
+              className: input.className || 'your assigned class',
+              temporaryPassword,
+            })
+          : 'not_sent'
 
-      res.status(201).json({ data: { teacher } })
+      res.status(201).json({ data: { teacher, onboardingEmail } })
     } catch (error) {
       next(error)
     }
   })
+
+  /**
+   * Reissues a class teacher's temporary password after a failed or lost
+   * onboarding email. The administrator never sees the value; it is emailed
+   * once to the teacher and every existing session is revoked.
+   */
+  router.post(
+    '/:schoolId/teachers/:membershipId/resend-credentials',
+    admin,
+    credentialReissueLimiter.middleware,
+    async (req, res, next) => {
+      try {
+        const access = requireAccess(req)
+        const temporaryPassword = generateTemporaryPassword()
+        const passwordHash = await hashPassword(temporaryPassword)
+        const teacher = await schoolRepository.resetTeacherTemporaryPassword(
+          access.schoolId,
+          routeParam(req, 'membershipId'),
+          passwordHash,
+          auditContext(req),
+        )
+
+        const onboardingEmail = await sendTeacherCredentials({
+          schoolId: access.schoolId,
+          teacher,
+          className: await classTeacherClassName(
+            access.schoolId,
+            teacher.membershipId,
+          ),
+          temporaryPassword,
+        })
+
+        res.status(200).json({ data: { teacher, onboardingEmail } })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
 
   router.get(
     '/:schoolId/teacher-assignments',

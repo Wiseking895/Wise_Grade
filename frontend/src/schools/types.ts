@@ -345,6 +345,8 @@ export interface IssuedSubjectTeacherInvitation
   code: string
 }
 
+export type OnboardingEmailStatus = 'sent' | 'queued' | 'not_sent'
+
 export interface RegisterClassWithTeacherInput {
   className: string
   level?: string | null
@@ -355,7 +357,6 @@ export interface RegisterClassWithTeacherInput {
     lastName: string
     email: string
     phone?: string | null
-    initialPassword: string
   }
 }
 
@@ -363,6 +364,8 @@ export interface ClassRegistrationResult {
   class: SchoolClass
   teacher: Teacher
   assignment: ClassTeacherAssignment
+  /** Actual dispatch outcome of the generated-password onboarding email. */
+  onboardingEmail?: OnboardingEmailStatus
 }
 
 export type RegisterTeacherSubjectInput = ClassSubjectInput
@@ -373,7 +376,6 @@ export interface RegisterTeacherInput {
   email: string
   phone?: string | null
   role: TeacherRole
-  initialPassword: string
   /** Required for class teachers: the class they will manage. */
   className?: string
   /** Optional existing class id, used instead of className. */

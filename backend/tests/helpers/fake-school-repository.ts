@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { HttpError } from '../../src/errors/http-error.js'
-import { generateOpaqueToken, hashToken } from '../../src/auth/tokens.js'
+import { generateSubjectAccessCode, hashToken } from '../../src/auth/tokens.js'
 import { DEFAULT_CLASSES } from '../../src/schools/defaults.js'
 import { env } from '../../src/config/env.js'
 import type {
@@ -1974,8 +1974,13 @@ export class FakeSchoolRepository implements SchoolRepository {
       }
     }
 
-    const code = generateOpaqueToken()
-    const codeHash = hashToken(code)
+    let code = generateSubjectAccessCode()
+    let codeHash = hashToken(code)
+
+    while (this.auth.invitations.has(codeHash)) {
+      code = generateSubjectAccessCode()
+      codeHash = hashToken(code)
+    }
     const invitation: StoredInvitation = {
       id: randomUUID(),
       schoolId: input.schoolId,
@@ -2738,6 +2743,45 @@ export class FakeSchoolRepository implements SchoolRepository {
         { classId: cls.id, membershipId, className: cls.name },
       )
     }
+
+    return this.teacherRecord(schoolId, membershipId)
+  }
+
+  async resetTeacherTemporaryPassword(
+    schoolId: string,
+    membershipId: string,
+    passwordHash: string,
+    audit: AuditContext,
+  ): Promise<TeacherRecord> {
+    const membership = this.teacherMembership(schoolId, membershipId)
+
+    if (membership.role !== 'CLASS_TEACHER') {
+      throw new HttpError(
+        409,
+        'Only a class teacher account can receive replacement credentials',
+      )
+    }
+
+    if (!membership.user.isActive) {
+      throw new HttpError(
+        409,
+        'This teacher account is not active. Restore access before reissuing credentials.',
+      )
+    }
+
+    await this.auth.replacePasswordHashFor(
+      membership.user.id,
+      passwordHash,
+    )
+
+    this.record(
+      schoolId,
+      audit,
+      'TEACHER_CREDENTIALS_REISSUED',
+      'SchoolMembership',
+      membership.id,
+      { email: membership.user.email, userId: membership.user.id },
+    )
 
     return this.teacherRecord(schoolId, membershipId)
   }

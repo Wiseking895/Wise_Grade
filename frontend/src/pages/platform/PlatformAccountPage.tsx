@@ -9,6 +9,7 @@ import {
   UserRound,
 } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import AutoSaveIndicator from '../../components/AutoSaveIndicator'
 import FormField from '../../components/FormField'
 import {
   Badge,
@@ -21,6 +22,7 @@ import {
 } from '../../components/ui'
 import { useAuth } from '../../auth/use-auth'
 import { formatDateTime } from '../../lib/format'
+import { useAutoSave } from '../../lib/use-auto-save'
 import {
   changePlatformAccountEmail,
   changePlatformAccountPassword,
@@ -34,7 +36,7 @@ import type {
   PlatformAccountSession,
 } from '../../platform/types'
 
-type Busy = 'profile' | 'email' | 'password' | 'sessions' | null
+type Busy = 'email' | 'password' | 'sessions' | null
 
 export default function PlatformAccountPage() {
   const { refresh } = useAuth()
@@ -46,7 +48,6 @@ export default function PlatformAccountPage() {
   const [busy, setBusy] = useState<Busy>(null)
 
   const [profile, setProfile] = useState({ firstName: '', lastName: '' })
-  const [profileError, setProfileError] = useState<string | null>(null)
 
   const [emailForm, setEmailForm] = useState({ email: '', currentPassword: '' })
   const [emailError, setEmailError] = useState<string | null>(null)
@@ -93,31 +94,21 @@ export default function PlatformAccountPage() {
     void load()
   }, [load])
 
-  async function saveProfile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    if (busy) return
-
-    setBusy('profile')
-    setProfileError(null)
-    setNotice(null)
-
-    try {
+  const profileAutoSave = useAutoSave({
+    value: profile,
+    enabled: account !== null && !loading,
+    canSave:
+      profile.firstName.trim().length >= 2 &&
+      profile.lastName.trim().length >= 2,
+    save: async (next) => {
       const response = await updatePlatformAccountProfile({
-        firstName: profile.firstName.trim(),
-        lastName: profile.lastName.trim(),
+        firstName: next.firstName.trim(),
+        lastName: next.lastName.trim(),
       })
-      apply(response.account)
+      setAccount(response.account)
       await refresh()
-      setNotice('Profile updated.')
-    } catch (cause) {
-      setProfileError(
-        cause instanceof Error ? cause.message : 'Could not update your profile.',
-      )
-    } finally {
-      setBusy(null)
-    }
-  }
+    },
+  })
 
   async function saveEmail(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -298,8 +289,16 @@ export default function PlatformAccountPage() {
                 <UserRound aria-hidden="true" className="size-5 text-gradely-blue" />
                 Profile
               </h2>
-              <form onSubmit={saveProfile} className="mt-4 space-y-4">
-                {profileError ? <ErrorNotice message={profileError} /> : null}
+              <div className="mt-3 flex justify-end">
+                <AutoSaveIndicator
+                  {...profileAutoSave}
+                  onRetry={() => void profileAutoSave.retry()}
+                />
+              </div>
+              <form
+                onSubmit={(event) => event.preventDefault()}
+                className="mt-4 space-y-4"
+              >
                 <FormField
                   label="First name"
                   value={profile.firstName}
@@ -309,6 +308,7 @@ export default function PlatformAccountPage() {
                       firstName: event.target.value,
                     }))
                   }
+                  onBlur={() => void profileAutoSave.flush()}
                   required
                 />
                 <FormField
@@ -320,14 +320,12 @@ export default function PlatformAccountPage() {
                       lastName: event.target.value,
                     }))
                   }
+                  onBlur={() => void profileAutoSave.flush()}
                   required
                 />
-                <div className="flex justify-end">
-                  <Button type="submit" loading={busy === 'profile'}>
-                    <Save aria-hidden="true" className="size-4" />
-                    Save profile
-                  </Button>
-                </div>
+                <p className="text-xs text-gradely-muted">
+                  Name changes save automatically.
+                </p>
               </form>
             </Panel>
 

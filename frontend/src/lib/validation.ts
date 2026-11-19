@@ -17,25 +17,49 @@ export type FieldErrors = Partial<
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MIN_PASSWORD_LENGTH = 10
 const GHANA_MOBILE_NATIONAL = /^[235]\d{8}$/
+/** E.164 allows at most 15 digits including the country code. */
+const E164 = /^\+[1-9]\d{7,14}$/
 export const MAX_SCHOOL_LOGO_BYTES = 2 * 1024 * 1024
 export const SCHOOL_LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 
-/** Normalizes a Ghana mobile number to +233XXXXXXXXX, or null when invalid. */
+/**
+ * Normalizes a phone number to canonical E.164, or null when invalid.
+ * Ghanaian national forms become +233XXXXXXXXX; other international numbers
+ * must already use `+` or the `00` dialling prefix.
+ */
 export function normalizeGhanaMobile(value: string): string | null {
   const cleaned = value.trim().replace(/[\s().-]/g, '')
 
-  let national: string
+  if (cleaned === '') {
+    return null
+  }
 
-  if (cleaned.startsWith('+233')) {
-    national = cleaned.slice(4)
-  } else if (cleaned.startsWith('00233')) {
-    national = cleaned.slice(5)
-  } else if (cleaned.startsWith('233')) {
-    national = cleaned.slice(3)
-  } else if (cleaned.startsWith('0')) {
-    national = cleaned.slice(1)
-  } else {
-    national = cleaned
+  const international = cleaned.startsWith('00')
+    ? `+${cleaned.slice(2)}`
+    : cleaned
+
+  if (international.startsWith('+233')) {
+    let national = international.slice(4)
+
+    if (national.startsWith('0')) {
+      national = national.slice(1)
+    }
+
+    return GHANA_MOBILE_NATIONAL.test(national) ? `+233${national}` : null
+  }
+
+  if (international.startsWith('+')) {
+    return E164.test(international) ? international : null
+  }
+
+  let national = international
+
+  if (national.startsWith('233')) {
+    national = national.slice(3)
+  }
+
+  if (national.startsWith('0')) {
+    national = national.slice(1)
   }
 
   return GHANA_MOBILE_NATIONAL.test(national) ? `+233${national}` : null
@@ -105,7 +129,7 @@ export function validateRegistration(values: {
   if (!values.phone.trim()) {
     errors.phone = 'Mobile number is required'
   } else if (!normalizeGhanaMobile(values.phone)) {
-    errors.phone = 'Enter a valid Ghana mobile number, e.g. 024 000 0000'
+    errors.phone = 'Enter a valid phone number, e.g. 024 000 0000'
   }
 
   const logoError = validateSchoolLogoFile(values.logo)

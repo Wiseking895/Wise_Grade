@@ -77,18 +77,25 @@ describe('school branding helpers', () => {
     expect(normalizeGhanaMobile('(020) 123-4567')).toBe('+233201234567')
   })
 
-  it('rejects numbers that are not Ghana mobile numbers', () => {
+  it('accepts international numbers in canonical E.164 form', () => {
+    expect(normalizeGhanaMobile('+1 555 010 0000')).toBe('+15550100000')
+    expect(normalizeGhanaMobile('0044 20 7946 0958')).toBe('+442079460958')
+    expect(normalizeGhanaMobile('+44 20 7946 0958')).toBe('+442079460958')
+  })
+
+  it('rejects numbers that are neither Ghana mobile nor valid E.164', () => {
     for (const value of [
       '',
       '12345',
       '024000000',
       '02400000000',
       '0440000000',
-      '+1 555 010 0000',
       'not-a-number',
+      '+0123456789',
+      '+1 555',
     ]) {
       expect(() => normalizeGhanaMobile(value)).toThrow(
-        'Enter a valid Ghana mobile number',
+        'Enter a valid phone number',
       )
     }
   })
@@ -295,7 +302,7 @@ describe('school registration branding', () => {
   }
 
   it('persists required identity and stores the logo privately', async () => {
-    const response = await register()
+    const response = await register(registrationBody({ phone: '024 000 0000' }))
 
     expect(response.status).toBe(201)
     const schoolId = response.body.data.school.id as string
@@ -365,7 +372,7 @@ describe('school registration branding', () => {
       expect.arrayContaining([
         expect.objectContaining({
           field: 'phone',
-          message: expect.stringContaining('Ghana mobile number'),
+          message: expect.stringContaining('valid phone number'),
         }),
       ]),
     )
@@ -518,7 +525,9 @@ describe('school profile branding routes', () => {
   }
 
   it('exposes the school logo, landmark and completeness without leaking storage keys', async () => {
-    const { agent, schoolId } = await registerProfile()
+    const { agent, schoolId } = await registerProfile({
+      phone: '024 000 0000',
+    })
 
     const response = await agent.get(`/api/schools/${schoolId}/profile`)
 
@@ -1226,11 +1235,11 @@ describe('pupil photograph routes', () => {
         lastName: 'Teacher',
         email: teacherEmail,
         role: 'CLASS_TEACHER',
-        initialPassword: TEST_PASSWORD,
         className: 'Basic 1',
       })
     expect(teacherResponse.status).toBe(201)
 
+    await auth.setPasswordForTesting(teacherEmail, TEST_PASSWORD)
     const teacherAgent = await login(teacherEmail)
     const classId = schools.classByName(schoolId, 'Basic 1').id
 
@@ -1360,10 +1369,13 @@ describe('pupil photograph routes', () => {
         lastName: 'Teacher',
         email: 'ct-photo-other@greenvalley.test',
         role: 'CLASS_TEACHER',
-        initialPassword: TEST_PASSWORD,
         className: 'Basic 2',
       })
     expect(otherTeacher.status).toBe(201)
+    await auth.setPasswordForTesting(
+      'ct-photo-other@greenvalley.test',
+      TEST_PASSWORD,
+    )
     const otherAgent = await login('ct-photo-other@greenvalley.test')
 
     const upload = await uploadPhoto(otherAgent, schoolId, pupilId)

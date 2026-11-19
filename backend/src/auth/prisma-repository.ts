@@ -253,6 +253,7 @@ export function createPrismaAuthRepository(): AuthRepository {
             passwordHash: input.admin.passwordHash,
             firstName: input.admin.firstName,
             lastName: input.admin.lastName,
+            phone: input.admin.phone,
             isPlatformAdmin: false,
             // New administrators must verify their address before school
             // administration is unlocked. Existing accounts keep the default
@@ -385,6 +386,14 @@ export function createPrismaAuthRepository(): AuthRepository {
     async findUserByEmail(email: string): Promise<UserRecord | null> {
       const user = await getPrismaClient().user.findUnique({
         where: { email: email.toLowerCase() },
+      })
+
+      return user ? mapUser(user) : null
+    },
+
+    async findUserByPhone(phone: string): Promise<UserRecord | null> {
+      const user = await getPrismaClient().user.findFirst({
+        where: { phone },
       })
 
       return user ? mapUser(user) : null

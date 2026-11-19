@@ -1,9 +1,14 @@
 import { z } from 'zod'
 import { HttpError } from '../errors/http-error.js'
+import { isCommonPassword } from './password.js'
 import {
-  normalizeGhanaMobile,
+  normalizePhoneNumber,
   SCHOOL_LOGO_MIME_TYPES,
 } from '../lib/school-branding.js'
+import {
+  normalizeSubjectAccessCode,
+  SUBJECT_ACCESS_CODE_LENGTH,
+} from './tokens.js'
 
 /**
  * Canonical account email rule: trim and lowercase before the format check, so
@@ -27,6 +32,9 @@ const password = z
   .string()
   .min(10, 'Password must be at least 10 characters')
   .max(128, 'Password must be 128 characters or fewer')
+  .refine((value) => !isCommonPassword(value), {
+    message: 'Choose a less common password',
+  })
 
 export const ghanaMobileSchema = z
   .string()
@@ -35,11 +43,12 @@ export const ghanaMobileSchema = z
   .max(32, 'Mobile number is too long')
   .transform((value, ctx) => {
     try {
-      return normalizeGhanaMobile(value)
+      return normalizePhoneNumber(value)
     } catch {
       ctx.addIssue({
         code: 'custom',
-        message: 'Enter a valid Ghana mobile number, e.g. 024 000 0000',
+        message:
+          'Enter a valid phone number, e.g. 024 000 0000 or +233 24 000 0000',
       })
       return z.NEVER
     }
@@ -108,7 +117,24 @@ export const passwordResetConfirmSchema = z
 
 export const subjectTeacherAccessCodeSchema = z
   .object({
-    code: z.string().trim().min(20, 'Access code is invalid').max(256),
+    code: z
+      .string()
+      .trim()
+      .min(1, 'Enter your access code')
+      .max(64, 'Access code is invalid')
+      .transform((value, ctx) => {
+        const normalized = normalizeSubjectAccessCode(value)
+
+        if (!normalized) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Enter the ${SUBJECT_ACCESS_CODE_LENGTH}-character access code, e.g. 4821Kmw`,
+          })
+          return z.NEVER
+        }
+
+        return normalized
+      }),
   })
   .strict()
 

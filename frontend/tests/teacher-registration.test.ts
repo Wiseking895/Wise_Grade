@@ -12,7 +12,7 @@ describe('class-teacher registration field feedback', () => {
     const rows = fieldFeedback([
       { field: 'className', message: 'Class name must be at least 2 characters' },
       { field: 'teacher.email', message: 'Enter a valid email address' },
-      { field: 'teacher.phone', message: 'Enter a valid Ghana mobile number' },
+      { field: 'teacher.phone', message: 'Enter a valid phone number' },
     ])
 
     assert.deepEqual(
@@ -33,7 +33,6 @@ describe('class-teacher registration field feedback', () => {
       'teacher.lastName',
       'teacher.email',
       'teacher.phone',
-      'teacher.initialPassword',
     ]
 
     const rows = fieldFeedback(
@@ -75,7 +74,10 @@ describe('class-teacher registration request', () => {
     assert.match(page, /lastName: registerForm\.lastName\.trim\(\)/)
     assert.match(page, /email: registerForm\.email\.trim\(\)/)
     assert.match(page, /phone: registerForm\.phone\.trim\(\) \|\| null/)
-    assert.match(page, /initialPassword: registerForm\.initialPassword/)
+    // The server generates the temporary password; nobody types it here.
+    assert.doesNotMatch(page, /initialPassword/)
+    assert.match(page, /Gradely generates a strong temporary password/)
+    assert.match(page, /resendTeacherCredentials/)
   })
 
   it('shows field-specific errors and keeps the generic fallback', async () => {
