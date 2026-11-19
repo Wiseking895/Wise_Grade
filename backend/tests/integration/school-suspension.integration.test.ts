@@ -96,6 +96,10 @@ describe.skipIf(!runIntegration)('School suspension integration', () => {
     const userId = response.body.data.user.id as string
     trackSchool(schoolId)
     trackUser(userId)
+    await prisma.user.update({
+      where: { id: userId },
+      data: { emailVerifiedAt: new Date(), emailVerificationRequired: false },
+    })
 
     return { agent, schoolId, userId, email }
   }

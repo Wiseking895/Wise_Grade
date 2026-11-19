@@ -323,6 +323,13 @@ describe.skipIf(!runIntegration)(
       const schoolId = registrationData.school.id
       trackSchool(schoolId)
       trackUser(registrationData.user.id)
+      await prisma.user.update({
+        where: { id: registrationData.user.id },
+        data: {
+          emailVerifiedAt: new Date(),
+          emailVerificationRequired: false,
+        },
+      })
 
       const years = await admin.get(
         `/api/schools/${schoolId}/academic-years`,
@@ -384,10 +391,14 @@ describe.skipIf(!runIntegration)(
           className: 'Basic 1',
         })
       expect(classTeacherResponse.status).toBe(201)
-      trackUser(
-        data<{ teacher: { userId: string } }>(classTeacherResponse).teacher
-          .userId,
-      )
+      const classTeacherUserId = data<{ teacher: { userId: string } }>(
+        classTeacherResponse,
+      ).teacher.userId
+      trackUser(classTeacherUserId)
+      await prisma.user.update({
+        where: { id: classTeacherUserId },
+        data: { mustChangePassword: false },
+      })
 
       const earlyTeacherResponse = await admin
         .post(`/api/schools/${schoolId}/teachers`)
@@ -401,10 +412,14 @@ describe.skipIf(!runIntegration)(
           className: 'Creche',
         })
       expect(earlyTeacherResponse.status).toBe(201)
-      trackUser(
-        data<{ teacher: { userId: string } }>(earlyTeacherResponse).teacher
-          .userId,
-      )
+      const earlyTeacherUserId = data<{ teacher: { userId: string } }>(
+        earlyTeacherResponse,
+      ).teacher.userId
+      trackUser(earlyTeacherUserId)
+      await prisma.user.update({
+        where: { id: earlyTeacherUserId },
+        data: { mustChangePassword: false },
+      })
 
       classTeacher = request.agent(app)
       const classTeacherLogin = await classTeacher

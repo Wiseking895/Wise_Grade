@@ -850,7 +850,11 @@ export class ReportReleaseService {
       )
     }
 
-    if (batch.skippedCount > 0) {
+    // A request batch may legitimately reuse a pupil's already released final
+    // report (for example when a later request covers a newly enrolled pupil).
+    // Direct generation skips are still blocked: those versions are not
+    // attached to the batch and may never have been released.
+    if (batch.skippedCount > 0 && batch.submittedAt === null) {
       add(
         'GENERATION_SKIPPED',
         'This batch reused existing report versions that are not attached to the batch. Generate a fresh batch before submitting it for release.',

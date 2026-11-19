@@ -21,6 +21,14 @@ export interface UserRecord {
   failedLoginCount: number
   lastFailedLoginAt: Date | null
   lastLoginAt: Date | null
+  /** Set once the administrator completes email verification. */
+  emailVerifiedAt?: Date | null
+  /** True only for accounts created after verification was introduced. */
+  emailVerificationRequired?: boolean
+  /** True until a teacher replaces the temporary password. */
+  mustChangePassword?: boolean
+  /** Timestamp of the most recent successful password rotation. */
+  passwordChangedAt?: Date | null
   createdAt: Date
 }
 
@@ -121,6 +129,23 @@ export interface CreatePasswordResetTokenInput {
   tokenHash: string
   expiresAt: Date
   ipAddress?: string
+}
+
+export interface CreateEmailVerificationTokenInput {
+  userId: string
+  tokenHash: string
+  expiresAt: Date
+  ipAddress?: string
+}
+
+export interface ChangePasswordInput {
+  userId: string
+  passwordHash: string
+  now: Date
+  /** Keep the caller's current session alive; every other session is revoked. */
+  currentSessionId?: string | null
+  /** True when this change completes the forced first-login rotation. */
+  forceChangeCleared?: boolean
 }
 
 export interface SubjectTeacherIdentity {
@@ -237,6 +262,31 @@ export interface AuthRepository {
     passwordHash: string
     now: Date
   }): Promise<boolean>
+
+  /**
+   * Revokes every outstanding verification token for the user and creates a new
+   * one. Only the hash is stored. Returns the new token row id so the caller can
+   * use it as a stable email dedupe key.
+   */
+  createEmailVerificationToken(
+    input: CreateEmailVerificationTokenInput,
+  ): Promise<{ id: string }>
+
+  /**
+   * Consumes a single-use verification token and marks the user verified in one
+   * atomic step. Returns null for unknown, expired, revoked or already-used
+   * tokens, so concurrent clicks cannot verify twice.
+   */
+  consumeEmailVerificationToken(input: {
+    tokenHash: string
+    now: Date
+  }): Promise<{ userId: string } | null>
+
+  /**
+   * Replaces a password, clears the forced-change flag and revokes all other
+   * sessions. Used by the first-login flow and the authenticated change form.
+   */
+  changePassword(input: ChangePasswordInput): Promise<boolean>
 
   /**
    * Resolves a reusable access code, creates a restricted subject-teacher

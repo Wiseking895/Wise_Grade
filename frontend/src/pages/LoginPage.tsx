@@ -30,9 +30,17 @@ function safeRedirectTarget(value: unknown): string {
 }
 
 function landingFor(user: AuthUser, from: unknown): string {
+  if (user.mustChangePassword) {
+    return '/change-password'
+  }
+
   if (user.isPlatformAdmin) {
     const requested = safeRedirectTarget(from)
     return requested.startsWith('/platform') ? requested : '/platform'
+  }
+
+  if (user.emailVerificationRequired && !user.emailVerified) {
+    return '/verify-email'
   }
 
   return safeRedirectTarget(from)
@@ -50,7 +58,11 @@ export default function LoginPage() {
   if (status === 'authenticated') {
     return (
       <Navigate
-        to={user?.isPlatformAdmin ? '/platform' : '/dashboard'}
+        to={
+          user
+            ? landingFor(user, null)
+            : '/dashboard'
+        }
         replace
       />
     )

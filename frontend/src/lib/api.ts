@@ -1,5 +1,6 @@
 import type {
   AuthSession,
+  AuthUser,
   LoginInput,
   RegisterSchoolInput,
   RegisterSchoolResult,
@@ -168,6 +169,44 @@ export function logoutRequest(): Promise<{ message: string }> {
   return apiRequest<{ message: string }>('/api/auth/logout', {
     method: 'POST',
   })
+}
+
+/**
+ * Confirms a single-use administrator email-verification link. The token is
+ * sent in the request body, never in a URL the browser writes to logs.
+ */
+export function confirmEmailVerificationRequest(
+  token: string,
+): Promise<{ message: string; user: AuthUser | null }> {
+  return apiRequest<{ message: string; user: AuthUser | null }>(
+    '/api/auth/email-verification/confirm',
+    { method: 'POST', body: { token } },
+  )
+}
+
+/** Requests a fresh verification link; the previous link stops working. */
+export function resendEmailVerificationRequest(): Promise<{
+  message: string
+}> {
+  return apiRequest<{ message: string }>(
+    '/api/auth/email-verification/resend',
+    { method: 'POST' },
+  )
+}
+
+export interface ChangePasswordInput {
+  currentPassword: string
+  newPassword: string
+}
+
+/** Replaces the signed-in user's password and clears forced rotation. */
+export function changePasswordRequest(
+  input: ChangePasswordInput,
+): Promise<{ message: string; user: AuthUser | null }> {
+  return apiRequest<{ message: string; user: AuthUser | null }>(
+    '/api/auth/change-password',
+    { method: 'POST', body: input },
+  )
 }
 
 /**

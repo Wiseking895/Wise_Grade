@@ -83,6 +83,15 @@ import {
 import { createPlatformOperationsRouter } from './platform/operations-routes.js'
 import { createRequireReauth } from './platform/reauth.js'
 import { env } from './config/env.js'
+import {
+  createEmailOutboxRouter,
+  createPlatformEmailRouter,
+} from './email/routes.js'
+import {
+  NoopEmailService,
+  TransactionalEmailService,
+  type EmailService,
+} from './email/service.js'
 import type { ReverseGeocoder } from './location/types.js'
 import { reverseGeocoderFromEnvironment } from './location/reverse-geocoder.js'
 import {
@@ -145,6 +154,15 @@ export interface AppOptions {
   loginRateLimit?: { windowMs: number; max: number }
   registrationRateLimit?: { windowMs: number; max: number }
   passwordResetRateLimit?: { windowMs: number; max: number }
+  emailVerificationRateLimit?: { windowMs: number; max: number }
+  passwordChangeRateLimit?: { windowMs: number; max: number }
+  smtpTestRateLimit?: { windowMs: number; max: number }
+  /**
+   * Injectable transactional email service. Tests pass a capture double (or
+   * rely on the automatic no-op service) so no SMTP connection is attempted.
+   */
+  emailService?: EmailService
+  emailVerificationExpiryHours?: number
   /**
    * Injectable origin allow-list for tests. Production and development both
    * derive it from configuration via `getAllowedOrigins()`.
@@ -255,6 +273,14 @@ export function createApp(options: AppOptions = {}): Express {
       : () => platformRepository.isRegistrationEnabled())
   const reverseGeocoder =
     options.reverseGeocoder ?? reverseGeocoderFromEnvironment()
+  // Email is fully injectable. Under NODE_ENV=test the default is a no-op so a
+  // unit test can never open an SMTP connection or touch the outbox table by
+  // accident; production uses the SMTP service backed by the persisted outbox.
+  const emailService: EmailService =
+    options.emailService ??
+    (env.NODE_ENV === 'test'
+      ? new NoopEmailService()
+      : new TransactionalEmailService())
 
   app.disable('x-powered-by')
   // Vercel terminates TLS at a single edge proxy. Trusting exactly one hop
@@ -316,11 +342,24 @@ export function createApp(options: AppOptions = {}): Express {
       loginRateLimit: options.loginRateLimit,
       registrationRateLimit: options.registrationRateLimit,
       passwordResetRateLimit: options.passwordResetRateLimit,
+      emailVerificationRateLimit: options.emailVerificationRateLimit,
+      passwordChangeRateLimit: options.passwordChangeRateLimit,
+      email: emailService,
+      emailVerificationExpiryHours: options.emailVerificationExpiryHours,
       registrationGuard,
       notifier: platformNotifier,
     }),
   )
-  app.use('/api/schools', createSchoolsRouter(authRepository, schoolRepository, allowedOrigins, reportStorage))
+  app.use(
+    '/api/schools',
+    createSchoolsRouter(
+      authRepository,
+      schoolRepository,
+      allowedOrigins,
+      reportStorage,
+      emailService,
+    ),
+  )
   // One-shot, authenticated reverse geocoding for the location indicator. It is
   // not school-scoped because it only resolves the signed-in user's own view.
   app.use(
@@ -419,6 +458,14 @@ export function createApp(options: AppOptions = {}): Express {
       { requireReauth: requireSensitiveReauth },
     ),
   )
+  // Administrator-only SMTP diagnostics. Mounted before the generic platform
+  // router so the specific path keeps precedence.
+  app.use(
+    '/api/platform/email',
+    createPlatformEmailRouter(authRepository, emailService, allowedOrigins, {
+      testRateLimit: options.smtpTestRateLimit,
+    }),
+  )
   // Operational platform surfaces run before the generic router so their
   // specific paths keep precedence and share the same authentication guards.
   app.use(
@@ -453,11 +500,18 @@ export function createApp(options: AppOptions = {}): Express {
     '/api/internal/calendar',
     createCalendarSchedulerRouter(calendarScheduler, { secret: cronSecret }),
   )
+  // Protected outbox drain for retries in serverless deployments. Fails closed
+  // when CRON_SECRET is absent and shares the same bearer secret as the cron.
+  app.use(
+    '/api/internal/email',
+    createEmailOutboxRouter(emailService, { secret: cronSecret }),
+  )
 
   app.locals.calendarService = calendarService
   app.locals.calendarScheduler = calendarScheduler
   app.locals.platformOperations = platformOperations
   app.locals.platformNotifier = platformNotifier
+  app.locals.emailService = emailService
 
   app.use(notFoundHandler)
   app.use(errorHandler)

@@ -112,6 +112,26 @@ export const subjectTeacherAccessCodeSchema = z
   })
   .strict()
 
+export const emailVerificationConfirmSchema = z
+  .object({
+    token: z.string().trim().min(20, 'Verification token is invalid').max(256),
+  })
+  .strict()
+
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z
+      .string()
+      .min(1, 'Current password is required')
+      .max(128),
+    newPassword: password,
+  })
+  .strict()
+  .refine((value) => value.currentPassword !== value.newPassword, {
+    path: ['newPassword'],
+    message: 'Choose a password you have not used for this account',
+  })
+
 export type RegisterSchoolInput = z.infer<typeof registerSchoolSchema>
 export type LoginInput = z.infer<typeof loginSchema>
 export type PasswordResetRequestInput = z.infer<

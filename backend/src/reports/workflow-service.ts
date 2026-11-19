@@ -239,9 +239,21 @@ export class ReportWorkflowService {
           .catch(() => undefined)
       }
 
-      await this.releases
-        .recordGenerationFailure(detail.id, detail.schoolId, message, audit)
-        .catch(() => undefined)
+      // A fully consolidated request is a successful no-op, not a generation
+      // failure: every pupil already has a released final report.
+      const alreadyConsolidated =
+        error instanceof HttpError &&
+        typeof error.details === 'object' &&
+        error.details !== null &&
+        (error.details as Record<string, unknown>).code ===
+          'ALREADY_CONSOLIDATED'
+
+      if (!alreadyConsolidated) {
+        await this.releases
+          .recordGenerationFailure(detail.id, detail.schoolId, message, audit)
+          .catch(() => undefined)
+      }
+
       throw error
     }
 

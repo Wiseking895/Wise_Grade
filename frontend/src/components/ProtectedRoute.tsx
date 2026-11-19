@@ -25,7 +25,7 @@ export function SessionLoadingScreen() {
 }
 
 export default function ProtectedRoute({ children }: { children: ReactNode }) {
-  const { status } = useAuth()
+  const { status, user } = useAuth()
   const location = useLocation()
 
   if (status === 'loading') {
@@ -40,6 +40,24 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
         state={{ from: `${location.pathname}${location.search}` }}
       />
     )
+  }
+
+  // A temporary first-login password must be replaced before any workspace is
+  // usable. The API enforces this; the guard avoids a dead-end screen.
+  if (user?.mustChangePassword) {
+    return <Navigate to="/change-password" replace />
+  }
+
+  // Unverified administrators may sign in but cannot administer a school until
+  // they confirm their email. Existing verified accounts are unaffected because
+  // the flag is false for them.
+  if (
+    user &&
+    !user.isPlatformAdmin &&
+    user.emailVerificationRequired &&
+    !user.emailVerified
+  ) {
+    return <Navigate to="/verify-email" replace />
   }
 
   return <>{children}</>
@@ -74,6 +92,10 @@ export function PlatformProtectedRoute({
 
   if (!user?.isPlatformAdmin) {
     return <Navigate to="/dashboard" replace />
+  }
+
+  if (user.mustChangePassword) {
+    return <Navigate to="/change-password" replace />
   }
 
   return <>{children}</>

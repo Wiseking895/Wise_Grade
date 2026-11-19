@@ -1,5 +1,6 @@
 import { HttpError } from '../errors/http-error.js'
 import { getPrismaClient } from '../lib/prisma.js'
+import { env } from '../config/env.js'
 import type { Prisma } from '../generated/prisma/client.js'
 import { isUniqueConstraintError } from '../auth/prisma-repository.js'
 import { isSchoolRole, type SchoolRole } from '../auth/roles.js'
@@ -903,7 +904,12 @@ async function findTeacherMembership(
   return membership
 }
 
-const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const INVITATION_TTL_MS =
+  Math.max(1, env.SUBJECT_TEACHER_ACCESS_CODE_EXPIRY_DAYS) *
+  24 *
+  60 *
+  60 *
+  1000
 
 /**
  * Resolve a subject teacher's identity without creating a User, Membership or
@@ -2025,6 +2031,9 @@ export function createPrismaSchoolRepository(): SchoolRepository {
                 lastName: normalizeName(input.teacher.lastName),
                 phone: input.teacher.phone?.trim() || null,
                 isPlatformAdmin: false,
+                // The administrator chose this password on the teacher's
+                // behalf, so the teacher must replace it at first sign-in.
+                mustChangePassword: true,
               },
             })
           }
@@ -3289,6 +3298,9 @@ export function createPrismaSchoolRepository(): SchoolRepository {
               phone: input.phone?.trim() || null,
               // Teacher creation can never grant platform administration.
               isPlatformAdmin: false,
+              // An administrator-supplied password is temporary for class
+              // teachers and must be replaced before the account is usable.
+              mustChangePassword: input.role === 'CLASS_TEACHER',
             },
           })
         }

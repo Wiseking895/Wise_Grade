@@ -83,6 +83,22 @@ export function requireSchoolAccess(
         throw new HttpError(403, 'You do not have access to this school')
       }
 
+      // Newly registered school administrators must verify their address before
+      // school administration is unlocked. The flag defaults to false, so an
+      // account created before this rule (or a platform administrator) is never
+      // retroactively blocked. Class teachers and subject teachers are not
+      // subject to administrator verification.
+      if (
+        membership.role === 'SCHOOL_ADMIN' &&
+        req.auth?.user.emailVerificationRequired === true &&
+        req.auth.user.emailVerifiedAt == null
+      ) {
+        throw new HttpError(
+          403,
+          'Verify your email address before accessing school administration.',
+        )
+      }
+
       req.schoolAccess = membership
       next()
     } catch (error) {

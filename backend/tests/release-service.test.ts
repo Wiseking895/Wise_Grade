@@ -214,6 +214,53 @@ describe('ReportReleaseService platform workflow', () => {
     ])
   })
 
+  it('allows a submitted request to release after reusing an existing final report', async () => {
+    const context = await setup({
+      releaseStatus: 'APPROVED',
+      batchStatus: 'COMPLETED',
+      generatedCount: 1,
+      skippedCount: 1,
+      submittedAt: new Date('2026-11-02T09:00:00.000Z'),
+    })
+
+    const released = await context.service.release(
+      platformActor(),
+      context.seed.record.batch.id,
+      audit(),
+    )
+
+    expect(released.releaseStatus).toBe('RELEASED')
+    expect(eligibilityIssueCodes(released.eligibility.issues)).not.toContain(
+      'GENERATION_SKIPPED',
+    )
+  })
+
+  it('blocks release when a direct generation batch skipped a pupil', async () => {
+    const context = await setup({
+      releaseStatus: 'APPROVED',
+      batchStatus: 'COMPLETED',
+      generatedCount: 1,
+      skippedCount: 1,
+      submittedAt: null,
+    })
+
+    await expect(
+      context.service.release(
+        platformActor(),
+        context.seed.record.batch.id,
+        audit(),
+      ),
+    ).rejects.toMatchObject({ statusCode: 409 })
+
+    expect(context.repository.failedAttempts.at(-1)?.metadata).toMatchObject({
+      issues: [expect.objectContaining({ code: 'GENERATION_SKIPPED' })],
+    })
+    expect(
+      context.repository.records.get(context.seed.record.batch.id)?.batch
+        .releaseStatus,
+    ).toBe('APPROVED')
+  })
+
   it('does not allow approval twice', async () => {
     const context = await approvedSetup()
 

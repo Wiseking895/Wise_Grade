@@ -45,6 +45,8 @@ import PlatformSecurityPage from './pages/platform/PlatformSecurityPage'
 import PlatformSettingsPage from './pages/platform/PlatformSettingsPage'
 import RegisterSchoolPage from './pages/RegisterSchoolPage'
 import AccessCodePage from './pages/AccessCodePage'
+import ChangePasswordPage from './pages/ChangePasswordPage'
+import VerifyEmailPage from './pages/VerifyEmailPage'
 import { SchoolProvider } from './schools/SchoolProvider'
 
 export default function App() {
@@ -55,6 +57,8 @@ export default function App() {
           <Route path="/" element={<PlaceholderPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/access-code" element={<AccessCodePage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route path="/change-password" element={<ChangePasswordPage />} />
           <Route path="/register" element={<RegisterSchoolPage />} />
           <Route
             path="/dashboard"

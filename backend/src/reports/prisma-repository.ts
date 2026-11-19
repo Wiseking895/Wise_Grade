@@ -11,6 +11,7 @@ import type {
   ReportFailureRecord,
   ReportGenerationData,
   ReportInputRecord,
+  ReportReleaseStatus,
   ReportRepository,
   ReportSettingsRecord,
   ReportVersionRecord,
@@ -1021,6 +1022,9 @@ export function createPrismaReportRepository(): ReportRepository {
           versions: {
             orderBy: { version: 'desc' },
             take: 1,
+            include: {
+              batch: { select: { id: true, releaseStatus: true } },
+            },
           },
         },
       })
@@ -1037,6 +1041,10 @@ export function createPrismaReportRepository(): ReportRepository {
         snapshot: latest.snapshot,
         storageKey: latest.storageKey,
         checksum: latest.checksum,
+        batchId: latest.batch?.id ?? null,
+        releaseStatus:
+          (latest.batch?.releaseStatus as ReportReleaseStatus | undefined) ??
+          null,
       }
     },
 
@@ -1100,7 +1108,7 @@ export function createPrismaReportRepository(): ReportRepository {
         if (blocking) {
           throw new HttpError(
             409,
-            'A report-generation request for this term is already awaiting platform generation or has already produced reports.',
+            'A report-generation request for this term is already awaiting generation.',
             { batchId: blocking.id },
           )
         }

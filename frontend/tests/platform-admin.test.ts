@@ -59,7 +59,9 @@ describe('platform routing', () => {
   it('sends platform administrators to the overview after sign-in', async () => {
     const login = await source('../src/pages/LoginPage.tsx')
 
-    assert.match(login, /isPlatformAdmin \? '\/platform'/)
+    // Platform administrators always land on the overview after sign-in.
+    assert.match(login, /if \(user\.isPlatformAdmin\)/)
+    assert.match(login, /requested\.startsWith\('\/platform'\) \? requested : '\/platform'/)
     assert.doesNotMatch(login, /'\/platform\/billing'/)
   })
 

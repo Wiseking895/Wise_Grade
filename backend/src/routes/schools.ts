@@ -9,9 +9,13 @@ import { createAuthenticate } from '../middleware/authenticate.js'
 import { requireRole, requireSchoolAccess } from '../middleware/authorize.js'
 import { createAuthenticateEither } from '../middleware/subject-authenticate.js'
 import { requireTrustedOrigin } from '../middleware/csrf.js'
+import { createRateLimiter } from '../middleware/rate-limit.js'
 import type {
   AuditContext,
+  IssuedSubjectTeacherInvitation,
   SchoolRepository,
+  SubjectTeacherInvitationRecord,
+  TeacherRecord,
 } from '../schools/repository.js'
 import {
   academicTermQuerySchema,
@@ -41,6 +45,9 @@ import {
   signatureStorageKey,
 } from '../lib/school-branding.js'
 import { sha256, type StorageAdapter } from '../storage/storage.js'
+import { NoopEmailService, type EmailService } from '../email/service.js'
+import { formatEmailDateTime } from '../email/templates.js'
+import { accessCodeUrl, loginUrl } from '../email/links.js'
 
 function requireAccess(req: Request): MembershipRecord {
   if (!req.schoolAccess) {
@@ -131,6 +138,7 @@ export function createSchoolsRouter(
   schoolRepository: SchoolRepository,
   trustedOrigins: string[],
   storage: StorageAdapter,
+  email: EmailService = new NoopEmailService(),
 ): Router {
   const router = Router()
   const authenticate = createAuthenticate(authRepository)
@@ -142,6 +150,127 @@ export function createSchoolsRouter(
   const trustedOrigin = requireTrustedOrigin(trustedOrigins)
   const admin = requireRole('SCHOOL_ADMIN')
   const classTeacher = requireRole('CLASS_TEACHER')
+
+  // Replacement codes are issued by the class teacher only, and repeated
+  // requests must not generate unlimited codes or emails.
+  const codeReplacementLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    scope: 'access code replacement',
+    keyGenerator: (req) =>
+      `${req.auth?.user.id ?? req.ip ?? 'unknown'}|${req.params.classId ?? 'class'}`,
+  })
+
+  async function schoolDisplayName(schoolId: string): Promise<string> {
+    try {
+      const profile = await schoolRepository.getSchoolProfile(schoolId)
+      return profile?.name ?? 'your school'
+    } catch {
+      return 'your school'
+    }
+  }
+
+  /**
+   * Emails a newly created class teacher their login details. Only called when
+   * the account did not already exist, so an admin-supplied password is never
+   * presented as valid for an existing user whose password was left unchanged.
+   */
+  async function sendTeacherCredentials(input: {
+    schoolId: string
+    teacher: TeacherRecord
+    className: string
+    temporaryPassword: string
+  }): Promise<void> {
+    try {
+      const schoolName = await schoolDisplayName(input.schoolId)
+
+      await email.send({
+        template: 'teacher-credentials',
+        to: input.teacher.email,
+        dedupeKey: `teacher-credentials:${input.teacher.membershipId}`,
+        data: {
+          firstName: input.teacher.firstName,
+          schoolName,
+          className: input.className,
+          loginEmail: input.teacher.email,
+          temporaryPassword: input.temporaryPassword,
+          loginUrl: loginUrl(),
+        },
+      })
+    } catch {
+      console.error('[gradely-api] could not email class teacher credentials')
+    }
+  }
+
+  async function sendSubjectAccessCode(input: {
+    schoolId: string
+    invitation: IssuedSubjectTeacherInvitation
+    replaced: boolean
+  }): Promise<void> {
+    try {
+      const schoolName = await schoolDisplayName(input.schoolId)
+
+      await email.send({
+        template: input.replaced
+          ? 'subject-code-replaced'
+          : 'subject-assignment',
+        to: input.invitation.email,
+        dedupeKey: `subject-code:${input.invitation.id}`,
+        data: {
+          firstName: input.invitation.firstName,
+          schoolName,
+          className: input.invitation.className,
+          subjectName: input.invitation.subjectName,
+          accessCode: input.invitation.code,
+          accessCodeUrl: accessCodeUrl(),
+          expiresAt: formatEmailDateTime(input.invitation.expiresAt),
+        },
+      })
+    } catch {
+      console.error('[gradely-api] could not email subject access code')
+    }
+  }
+
+  /**
+   * Sends one expiry notice per expired invitation. Deduplication is enforced by
+   * the outbox key, so viewing the invitation list repeatedly is harmless.
+   */
+  async function notifyExpiredInvitations(
+    schoolId: string,
+    invitations: SubjectTeacherInvitationRecord[],
+  ): Promise<void> {
+    const expired = invitations.filter(
+      (invitation) =>
+        invitation.status === 'EXPIRED' && Boolean(invitation.email),
+    )
+
+    if (expired.length === 0) {
+      return
+    }
+
+    const schoolName = await schoolDisplayName(schoolId)
+
+    for (const invitation of expired) {
+      try {
+        await email.send({
+          template: 'subject-code-expired',
+          to: invitation.email,
+          dedupeKey: `subject-code-expired:${invitation.id}`,
+          data: {
+            firstName: invitation.firstName,
+            schoolName,
+            className: invitation.className,
+            subjectName: invitation.subjectName,
+            expiredAt: formatEmailDateTime(invitation.expiresAt),
+            accessCodeUrl: accessCodeUrl(),
+          },
+        })
+      } catch {
+        // A failed notice must never break the authorized listing request.
+      }
+    }
+  }
+
 
   /**
    * A restricted subject session may only reach the read-only class workspace
@@ -754,6 +883,7 @@ export function createSchoolsRouter(
       const access = requireAccess(req)
       const input = parseBody(registerClassWithTeacherSchema, req.body)
       const passwordHash = await hashPassword(input.teacher.initialPassword)
+      const existingUser = await authRepository.findUserByEmail(input.teacher.email)
 
       const result = await schoolRepository.registerClassWithTeacher(
         access.schoolId,
@@ -772,6 +902,18 @@ export function createSchoolsRouter(
         },
         auditContext(req),
       )
+
+      // The temporary password is only valid when this registration created the
+      // account. Re-assigning an existing account must never email a password
+      // the user did not just receive.
+      if (!existingUser) {
+        await sendTeacherCredentials({
+          schoolId: access.schoolId,
+          teacher: result.teacher,
+          className: result.class.name,
+          temporaryPassword: input.teacher.initialPassword,
+        })
+      }
 
       res.status(201).json({ data: result })
     } catch (error) {
@@ -894,6 +1036,14 @@ export function createSchoolsRouter(
           input,
           auditContext(req),
         )
+
+        if (result.invitation) {
+          await sendSubjectAccessCode({
+            schoolId: access.schoolId,
+            invitation: result.invitation,
+            replaced: false,
+          })
+        }
 
         res.status(201).json({ data: result })
       } catch (error) {
@@ -1395,6 +1545,7 @@ export function createSchoolsRouter(
       const access = requireAccess(req)
       const input = parseBody(registerTeacherSchema, req.body)
       const passwordHash = await hashPassword(input.initialPassword)
+      const existingUser = await authRepository.findUserByEmail(input.email)
       const teacher = await schoolRepository.registerTeacher(
         access.schoolId,
         {
@@ -1409,6 +1560,15 @@ export function createSchoolsRouter(
         },
         auditContext(req),
       )
+
+      if (!existingUser && input.role === 'CLASS_TEACHER') {
+        await sendTeacherCredentials({
+          schoolId: access.schoolId,
+          teacher,
+          className: input.className || 'your assigned class',
+          temporaryPassword: input.initialPassword,
+        })
+      }
 
       res.status(201).json({ data: { teacher } })
     } catch (error) {
@@ -1494,6 +1654,12 @@ export function createSchoolsRouter(
             auditContext(req),
           )
 
+        await sendSubjectAccessCode({
+          schoolId: access.schoolId,
+          invitation: result.invitation,
+          replaced: false,
+        })
+
         res.status(201).json({ data: result })
       } catch (error) {
         next(error)
@@ -1538,6 +1704,9 @@ export function createSchoolsRouter(
             classId,
           )
 
+        // One deduplicated expiry notice per expired code, sent to the teacher.
+        await notifyExpiredInvitations(access.schoolId, invitations)
+
         res.status(200).json({ data: { invitations } })
       } catch (error) {
         next(error)
@@ -1547,6 +1716,7 @@ export function createSchoolsRouter(
 
   router.post(
     '/:schoolId/classes/:classId/subject-teacher-invitations/:invitationId/reissue',
+    codeReplacementLimiter.middleware,
     async (req, res, next) => {
       try {
         const access = requireAccess(req)
@@ -1569,6 +1739,12 @@ export function createSchoolsRouter(
             invitationId,
             auditContext(req),
           )
+
+        await sendSubjectAccessCode({
+          schoolId: access.schoolId,
+          invitation,
+          replaced: true,
+        })
 
         res.status(201).json({ data: { invitation } })
       } catch (error) {

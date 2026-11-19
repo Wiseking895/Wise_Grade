@@ -43,6 +43,9 @@ interface DbUser {
   failedLoginCount?: number
   lastFailedLoginAt?: Date | null
   lastLoginAt?: Date | null
+  emailVerifiedAt?: Date | null
+  emailVerificationRequired?: boolean
+  mustChangePassword?: boolean
   createdAt: Date
 }
 
@@ -86,6 +89,9 @@ function mapUser(user: DbUser): UserRecord {
     failedLoginCount: user.failedLoginCount ?? 0,
     lastFailedLoginAt: user.lastFailedLoginAt ?? null,
     lastLoginAt: user.lastLoginAt ?? null,
+    emailVerifiedAt: user.emailVerifiedAt ?? null,
+    emailVerificationRequired: user.emailVerificationRequired ?? false,
+    mustChangePassword: user.mustChangePassword ?? false,
     createdAt: user.createdAt,
   }
 }
@@ -248,6 +254,10 @@ export function createPrismaAuthRepository(): AuthRepository {
             firstName: input.admin.firstName,
             lastName: input.admin.lastName,
             isPlatformAdmin: false,
+            // New administrators must verify their address before school
+            // administration is unlocked. Existing accounts keep the default
+            // false, so they are never retroactively locked out.
+            emailVerificationRequired: true,
           },
         })
 
@@ -665,6 +675,122 @@ export function createPrismaAuthRepository(): AuthRepository {
             action: 'PASSWORD_RESET_COMPLETED',
             entityType: 'User',
             entityId: token.userId,
+          },
+        })
+
+        return true
+      })
+    },
+
+    async createEmailVerificationToken(input) {
+      const prisma = getPrismaClient()
+      const now = new Date()
+
+      return prisma.$transaction(async (tx) => {
+        // Resending invalidates every outstanding link for this account.
+        await tx.emailVerificationToken.updateMany({
+          where: { userId: input.userId, usedAt: null, revokedAt: null },
+          data: { revokedAt: now },
+        })
+
+        const token = await tx.emailVerificationToken.create({
+          data: {
+            userId: input.userId,
+            tokenHash: input.tokenHash,
+            expiresAt: input.expiresAt,
+            ipAddress: input.ipAddress,
+          },
+        })
+
+        return { id: token.id }
+      })
+    },
+
+    async consumeEmailVerificationToken(input) {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const token = await tx.emailVerificationToken.findFirst({
+          where: {
+            tokenHash: input.tokenHash,
+            usedAt: null,
+            revokedAt: null,
+            expiresAt: { gt: input.now },
+          },
+        })
+
+        if (!token) {
+          return null
+        }
+
+        // The conditional update makes repeated or concurrent clicks safe: only
+        // one request can transition the token from unused to used.
+        const consumed = await tx.emailVerificationToken.updateMany({
+          where: { id: token.id, usedAt: null, revokedAt: null },
+          data: { usedAt: input.now },
+        })
+
+        if (consumed.count !== 1) {
+          return null
+        }
+
+        await tx.user.update({
+          where: { id: token.userId },
+          data: {
+            emailVerifiedAt: input.now,
+            emailVerificationRequired: false,
+          },
+        })
+
+        await tx.auditLog.create({
+          data: {
+            actorUserId: token.userId,
+            action: 'EMAIL_VERIFIED',
+            entityType: 'User',
+            entityId: token.userId,
+            metadata: { method: 'EMAIL_LINK' },
+          },
+        })
+
+        return { userId: token.userId }
+      })
+    },
+
+    async changePassword(input) {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const updated = await tx.user.updateMany({
+          where: { id: input.userId, isActive: true },
+          data: {
+            passwordHash: input.passwordHash,
+            mustChangePassword: false,
+            passwordChangedAt: input.now,
+          },
+        })
+
+        if (updated.count !== 1) {
+          return false
+        }
+
+        await tx.session.updateMany({
+          where: {
+            userId: input.userId,
+            revokedAt: null,
+            ...(input.currentSessionId
+              ? { id: { not: input.currentSessionId } }
+              : {}),
+          },
+          data: { revokedAt: input.now },
+        })
+
+        await tx.auditLog.create({
+          data: {
+            actorUserId: input.userId,
+            action: 'PASSWORD_CHANGED',
+            entityType: 'User',
+            entityId: input.userId,
+            metadata: { firstLogin: input.forceChangeCleared === true },
           },
         })
 

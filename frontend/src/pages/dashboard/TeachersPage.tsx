@@ -167,7 +167,7 @@ export default function TeachersPage() {
         },
       })
       setSuccess(
-        `${result.teacher.firstName} ${result.teacher.lastName} is registered as the class teacher for ${result.class.name}. The class teacher now sets up subjects and pupils.`,
+        `${result.teacher.firstName} ${result.teacher.lastName} is registered as the class teacher for ${result.class.name}. Their login email and temporary password were emailed to ${result.teacher.email}. They must choose a personal password before opening the class workspace.`,
       )
       setRegisterOpen(false)
       resetRegisterForm()
@@ -443,7 +443,7 @@ export default function TeachersPage() {
               required
               minLength={10}
               maxLength={128}
-              hint="Share this securely with the class teacher. They can change it after signing in."
+              hint="We email these details to the class teacher. They must replace this temporary password at first sign-in before opening the class workspace."
             />
           </section>
 

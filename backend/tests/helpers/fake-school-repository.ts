@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { HttpError } from '../../src/errors/http-error.js'
 import { generateOpaqueToken, hashToken } from '../../src/auth/tokens.js'
 import { DEFAULT_CLASSES } from '../../src/schools/defaults.js'
+import { env } from '../../src/config/env.js'
 import type {
   AcademicTermRecord,
   AcademicYearRecord,
@@ -1168,6 +1169,12 @@ export class FakeSchoolRepository implements SchoolRepository {
         lastName: clean(input.teacher.lastName),
         phone: input.teacher.phone ?? null,
       })
+      // Mirror the Prisma repository: the administrator chose this temporary
+      // password, so the teacher must replace it at first sign-in. Suites that
+      // are not about first-login rotation opt out (see FakeAuthRepository).
+      if (this.auth.requireTeacherPasswordChange) {
+        this.auth.requirePasswordChangeFor(user.id)
+      }
     }
 
     let membership = this.auth
@@ -1769,6 +1776,7 @@ export class FakeSchoolRepository implements SchoolRepository {
     classId: string,
   ): Promise<SubjectTeacherInvitationRecord[]> {
     this.requireClass(schoolId, classId)
+    const now = new Date()
 
     return [...this.subjectTeacherInvitations.values()]
       .filter(
@@ -1789,13 +1797,33 @@ export class FakeSchoolRepository implements SchoolRepository {
         lastName: item.lastName,
         email: item.email,
         phone: item.phone,
-        status: item.status,
+        // Derive the status so an invitation becomes EXPIRED exactly when the
+        // database would report it, without a background job.
+        status: item.usedAt
+          ? 'USED'
+          : item.revokedAt
+            ? 'REVOKED'
+            : item.expiresAt <= now
+              ? 'EXPIRED'
+              : 'PENDING',
         expiresAt: item.expiresAt,
         usedAt: item.usedAt,
         revokedAt: item.revokedAt,
         reissuedFromId: item.reissuedFromId,
         createdAt: item.createdAt,
       }))
+  }
+
+  /** Test helper: make an invitation look expired without waiting seven days. */
+  expireInvitation(invitationId: string): void {
+    const invitation = this.subjectTeacherInvitations.get(invitationId)
+
+    if (invitation) {
+      invitation.expiresAt = new Date(Date.now() - 1_000)
+      this.auth.updateSubjectTeacherInvitation(invitation.codeHash, {
+        expiresAt: invitation.expiresAt,
+      })
+    }
   }
 
   async reissueSubjectTeacherInvitation(
@@ -1879,6 +1907,9 @@ export class FakeSchoolRepository implements SchoolRepository {
 
     invitation.revokedAt = new Date()
     invitation.status = 'REVOKED'
+    this.auth.updateSubjectTeacherInvitation(invitation.codeHash, {
+      revokedAt: invitation.revokedAt,
+    })
     this.record(
       schoolId,
       audit,
@@ -1937,6 +1968,9 @@ export class FakeSchoolRepository implements SchoolRepository {
       ) {
         item.revokedAt = now
         item.status = 'REVOKED'
+        this.auth.updateSubjectTeacherInvitation(item.codeHash, {
+          revokedAt: now,
+        })
       }
     }
 
@@ -1957,7 +1991,14 @@ export class FakeSchoolRepository implements SchoolRepository {
       email: input.identity.email,
       phone: input.identity.phone,
       status: 'PENDING',
-      expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+      expiresAt: new Date(
+        now.getTime() +
+          Math.max(1, env.SUBJECT_TEACHER_ACCESS_CODE_EXPIRY_DAYS) *
+            24 *
+            60 *
+            60 *
+            1000,
+      ),
       usedAt: null,
       revokedAt: null,
       reissuedFromId: input.reissuedFromId ?? null,
@@ -2609,6 +2650,10 @@ export class FakeSchoolRepository implements SchoolRepository {
         // number is persisted on the new user account.
         phone: input.phone ?? null,
       })
+
+      if (input.role === 'CLASS_TEACHER' && this.auth.requireTeacherPasswordChange) {
+        this.auth.requirePasswordChangeFor(teacher.id)
+      }
     }
 
     const membershipId = await this.auth.addMembership(
@@ -2888,6 +2933,9 @@ export class FakeSchoolRepository implements SchoolRepository {
       ) {
         invitation.revokedAt = assignment.endedAt
         invitation.status = 'REVOKED'
+        this.auth.updateSubjectTeacherInvitation(invitation.codeHash, {
+          revokedAt: assignment.endedAt,
+        })
       }
     }
 

@@ -484,6 +484,13 @@ export interface ReportRepository {
     snapshot: unknown
     storageKey: string
     checksum: string
+    batchId: string | null
+    /**
+     * Release state of the batch that produced the version. A final report is
+     * only reusable by another request when it has already been released,
+     * because only then is the school able to read it.
+     */
+    releaseStatus: ReportReleaseStatus | null
   } | null>
 
   createBatch(
@@ -494,9 +501,10 @@ export interface ReportRepository {
 
   /**
    * Creates a school term request while holding a per-school/term lock and
-   * rejecting a duplicate request for a reporting period that is still
-   * pending, already approved, or has produced report artifacts. A fully
-   * failed batch with no generated reports does not block a corrected request.
+   * rejecting a second request while one is still pending or running. Terminal
+   * batches do not block a new request: the service separately refuses one
+   * when every pupil already has a released final report, and generation
+   * reuses released final reports instead of duplicating them.
    */
   createRequestBatch(
     actor: ReportActor,

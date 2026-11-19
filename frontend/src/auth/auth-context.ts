@@ -14,6 +14,12 @@ export interface AuthContextValue extends AuthState {
    * membership or password is created.
    */
   enterAccessCode(code: string): Promise<SubjectSession>
+  /** Confirms a single-use email-verification token and refreshes the session. */
+  confirmEmailVerification(token: string): Promise<string>
+  /** Requests a new verification link, invalidating the previous one. */
+  resendEmailVerification(): Promise<string>
+  /** Replaces the current password and clears any forced-change flag. */
+  changePassword(currentPassword: string, newPassword: string): Promise<void>
   logout(): Promise<void>
   refresh(): Promise<void>
 }

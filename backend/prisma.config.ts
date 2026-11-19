@@ -1,5 +1,10 @@
-import 'dotenv/config'
 import { defineConfig } from 'prisma/config'
+import { loadEnvFile, resolveEnvFile } from './src/config/env-file.js'
+
+// Explicit profile selection: .env (local) by default, or
+// GRADELY_ENV_FILE=.env.production.local for owner-approved production tooling.
+// Duplicate keys fail loudly instead of silently overriding each other.
+loadEnvFile(resolveEnvFile())
 
 // Offline Prisma commands (generate, validate, migrate diff) only need a
 // syntactically valid URL. This fallback is a localhost-only placeholder, not a

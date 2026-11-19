@@ -376,7 +376,27 @@ export class FakeReportRepository implements ReportRepository {
       snapshot: latest.snapshot,
       storageKey: latest.storageKey,
       checksum: latest.checksum,
+      batchId: latest.batchId,
+      releaseStatus:
+        (latest.batchId
+          ? this.batches.get(latest.batchId)?.releaseStatus
+          : null) ?? null,
     }
+  }
+
+  /**
+   * Test helper: simulates the platform release step for a batch so that its
+   * final reports become reusable by later requests.
+   */
+  markReleased(batchId: string): void {
+    const batch = this.batches.get(batchId)
+
+    if (!batch) {
+      throw new Error(`Unknown batch ${batchId}`)
+    }
+
+    batch.releaseStatus = 'RELEASED'
+    batch.releasedAt = new Date()
   }
 
   async createBatch(
@@ -439,7 +459,7 @@ export class FakeReportRepository implements ReportRepository {
     if (blocking) {
       throw new HttpError(
         409,
-        'A report-generation request for this term is already awaiting platform generation or has already produced reports.',
+        'A report-generation request for this term is already awaiting generation.',
         { batchId: blocking.id },
       )
     }

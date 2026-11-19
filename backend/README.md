@@ -72,8 +72,23 @@ npm run prisma:migrate         # dev only: create a migration from schema change
 
 ## Environment variables
 
-Copy `.env.example` to `.env` and replace placeholders when real values are
-available. `.env` is git-ignored. No real credentials are included here.
+Copy `.env.example` to `.env` for local development and replace placeholders
+when real values are available. `.env` is git-ignored. No real credentials are
+included here.
+
+Environment profiles are explicit:
+
+| File | Purpose | Loaded automatically |
+| ---- | ------- | -------------------- |
+| `.env` | Local development database and URLs | Yes |
+| `.env.production.local` | Production/Neon values for local tooling only | No |
+| `.env.test` | Optional test-only overrides | No |
+
+Set `GRADELY_ENV_FILE=.env.production.local` to use the production profile for
+read-only checks or approved Prisma tooling. Duplicate keys inside one file are
+rejected at load time, so a file can never silently contain both local and
+production database URLs. Vercel does not read `.env` files; configure variables
+in the Vercel project instead.
 
 | Variable                    | Required          | Default                 | Purpose                                              |
 | --------------------------- | ----------------- | ----------------------- | ---------------------------------------------------- |
@@ -81,6 +96,7 @@ available. `.env` is git-ignored. No real credentials are included here.
 | `PORT`                      | No                | `4000`                  | HTTP port                                            |
 | `CORS_ORIGINS`              | Yes in production | Dev localhost           | Comma-separated exact browser origins allowed by CORS |
 | `FRONTEND_URL`              | Yes in production | `http://localhost:5173` | Public frontend origin used for links, redirects and the origin allow-list |
+| `BACKEND_URL`               | Production        | None                    | Public API origin |
 | `DATABASE_URL`              | Only for database | None                    | PostgreSQL connection string used by Prisma          |
 | `TEST_DATABASE_URL`         | Only for tests    | None                    | Dedicated non-production database for integration tests |
 | `AUTH_SECRET`               | Reserved          | `REPLACE_ME`            | Reserved for future token signing / email links      |
@@ -89,6 +105,18 @@ available. `.env` is git-ignored. No real credentials are included here.
 | `R2_ACCESS_KEY_ID`          | Production        | None                    | Private R2 access key ID                             |
 | `R2_SECRET_ACCESS_KEY`      | Production        | None                    | Private R2 secret access key                         |
 | `R2_BUCKET_NAME`            | Production        | None                    | Private R2 bucket; never expose it publicly          |
+| `EMAIL_ENABLED`             | Production        | `false`                 | Enables Brevo SMTP delivery                          |
+| `SMTP_HOST`                 | With email        | None                    | Brevo SMTP relay host                                |
+| `SMTP_PORT`                 | No                | `587`                   | STARTTLS port                                        |
+| `SMTP_SECURE`               | No                | `false`                 | `true` only for implicit TLS                         |
+| `SMTP_USER` / `SMTP_PASS`   | With email        | None                    | Brevo SMTP login and SMTP key (secret)               |
+| `EMAIL_FROM_NAME`           | No                | `WiseGrade`             | Sender display name                                  |
+| `EMAIL_FROM_ADDRESS`        | With email        | None                    | Brevo-verified sender address                        |
+| `EMAIL_REPLY_TO`            | No                | None                    | Reply-to address                                     |
+| `EMAIL_TEST_RECIPIENT`      | SMTP test only    | Caller's address        | Restricts the admin SMTP test endpoint               |
+| `EMAIL_VERIFICATION_EXPIRY_HOURS` | No          | `24`                    | Administrator verification link lifetime             |
+| `SUBJECT_TEACHER_ACCESS_CODE_EXPIRY_DAYS` | No    | `7`                     | Access-code lifetime                                 |
+| `CRON_SECRET`               | Production jobs   | None                    | Protects calendar and email outbox cron endpoints    |
 | `PAYMENT_PROVIDER`          | No                | None                    | Set to `mock` outside production to enable the development provider |
 | `PAYMENT_SECRET_KEY`        | Reserved          | None                    | Reserved for a future real provider; never commit it |
 | `PAYMENT_WEBHOOK_SECRET`    | Mock only         | None                    | HMAC secret for the development mock webhook        |
@@ -318,10 +346,10 @@ It has no implicit access to any school or pupil data.
   reset link is logged to the server console only.
 - `requireSchoolAccess` resolves membership from the authenticated user and the
   `:schoolId` route parameter. There is no implicit cross-tenant access.
-- School administrators create teacher accounts with an initial password. A
-  production deployment should replace this with a secure email invitation
-  (single-use, expiring token, forced password change) rather than an
-  administrator choosing and transmitting passwords.
+- School administrators create teacher accounts with an initial password and the
+  credentials are emailed through the transactional outbox. The teacher must
+  replace the temporary password at first sign-in; the API enforces this
+  server-side on every route except the password-change and verification paths.
 
 School-scoped foundation endpoints include profile, academic years and terms,
 classes, pupils and enrollments, subjects, teachers, and teacher assignments.
@@ -904,6 +932,8 @@ Not implemented in Phase 6A:
 - Automatic refunds or credit notes for overpayments; excess is retained on the
   payment record for an explicit later decision.
 - Cloudflare R2 credentials in the repository; production must supply them.
-- Email delivery, secure teacher invitation tokens, and password-reset email.
+- Password-reset email (transactional email now covers administrator
+  verification, teacher credentials, first-login reminders and subject access
+  codes; password reset still only logs a development link).
 - Cross-instance rate limiting (the included limiter is in-process).
 - A full platform-administrator console for school onboarding beyond billing.

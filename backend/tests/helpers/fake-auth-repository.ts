@@ -5,6 +5,8 @@ import type {
   AuditEntry,
   AuthRepository,
   AuthResult,
+  ChangePasswordInput,
+  CreateEmailVerificationTokenInput,
   CreatePasswordResetTokenInput,
   CreateSchoolAdminInput,
   CreateSessionInput,
@@ -43,6 +45,15 @@ interface StoredResetToken {
   tokenHash: string
   expiresAt: Date
   usedAt: Date | null
+}
+
+interface StoredVerificationToken {
+  id: string
+  userId: string
+  tokenHash: string
+  expiresAt: Date
+  usedAt: Date | null
+  revokedAt: Date | null
 }
 
 interface StoredInvitation {
@@ -96,6 +107,7 @@ export class FakeAuthRepository implements AuthRepository {
   readonly memberships = new Map<string, StoredMembership>()
   readonly sessions = new Map<string, StoredSession>()
   readonly resetTokens = new Map<string, StoredResetToken>()
+  readonly verificationTokens = new Map<string, StoredVerificationToken>()
   readonly invitations = new Map<string, StoredInvitation>()
   readonly subjectSessions = new Map<string, StoredSubjectSession>()
   readonly mfaSecrets = new Map<
@@ -111,6 +123,34 @@ export class FakeAuthRepository implements AuthRepository {
   failNextSchoolCreation = false
 
   private emailIndex = new Map<string, string>()
+
+  /**
+   * Existing route suites treat a freshly registered administrator as an
+   * already-verified operator so they can exercise their own concern. Tests
+   * that specifically cover email verification opt in to the production
+   * behaviour with `new FakeAuthRepository({ requireAdminEmailVerification:
+   * true })`.
+   */
+  private readonly requireAdminEmailVerification: boolean
+
+  /**
+   * Likewise, most suites register a class teacher and immediately use the
+   * workspace. First-login password rotation is covered by its own suite, which
+   * opts in with `{ requireTeacherPasswordChange: true }`.
+   */
+  readonly requireTeacherPasswordChange: boolean
+
+  constructor(
+    options: {
+      requireAdminEmailVerification?: boolean
+      requireTeacherPasswordChange?: boolean
+    } = {},
+  ) {
+    this.requireAdminEmailVerification =
+      options.requireAdminEmailVerification ?? false
+    this.requireTeacherPasswordChange =
+      options.requireTeacherPasswordChange ?? false
+  }
 
   async createSchoolWithAdmin(
     input: CreateSchoolAdminInput,
@@ -158,6 +198,9 @@ export class FakeAuthRepository implements AuthRepository {
       failedLoginCount: 0,
       lastFailedLoginAt: null,
       lastLoginAt: null,
+      emailVerifiedAt: this.requireAdminEmailVerification ? null : new Date(),
+      emailVerificationRequired: this.requireAdminEmailVerification,
+      mustChangePassword: false,
       createdAt: new Date(),
     }
 
@@ -433,6 +476,99 @@ export class FakeAuthRepository implements AuthRepository {
     return true
   }
 
+  async createEmailVerificationToken(
+    input: CreateEmailVerificationTokenInput,
+  ): Promise<{ id: string }> {
+    const now = new Date()
+
+    for (const token of this.verificationTokens.values()) {
+      if (
+        token.userId === input.userId &&
+        token.usedAt === null &&
+        token.revokedAt === null
+      ) {
+        token.revokedAt = now
+      }
+    }
+
+    const id = randomUUID()
+    this.verificationTokens.set(input.tokenHash, {
+      id,
+      userId: input.userId,
+      tokenHash: input.tokenHash,
+      expiresAt: input.expiresAt,
+      usedAt: null,
+      revokedAt: null,
+    })
+
+    return { id }
+  }
+
+  async consumeEmailVerificationToken(input: {
+    tokenHash: string
+    now: Date
+  }): Promise<{ userId: string } | null> {
+    const token = this.verificationTokens.get(input.tokenHash)
+
+    if (
+      !token ||
+      token.usedAt !== null ||
+      token.revokedAt !== null ||
+      token.expiresAt <= input.now
+    ) {
+      return null
+    }
+
+    const user = this.users.get(token.userId)
+
+    if (!user) {
+      return null
+    }
+
+    token.usedAt = input.now
+    user.emailVerifiedAt = input.now
+    user.emailVerificationRequired = false
+
+    this.audits.push({
+      actorUserId: user.id,
+      action: 'EMAIL_VERIFIED',
+      entityType: 'User',
+      entityId: user.id,
+    })
+
+    return { userId: user.id }
+  }
+
+  async changePassword(input: ChangePasswordInput): Promise<boolean> {
+    const user = this.users.get(input.userId)
+
+    if (!user || !user.isActive) {
+      return false
+    }
+
+    user.passwordHash = input.passwordHash
+    user.mustChangePassword = false
+
+    for (const session of this.sessions.values()) {
+      if (
+        session.userId === input.userId &&
+        session.revokedAt === null &&
+        session.id !== input.currentSessionId
+      ) {
+        session.revokedAt = input.now
+      }
+    }
+
+    this.audits.push({
+      actorUserId: user.id,
+      action: 'PASSWORD_CHANGED',
+      entityType: 'User',
+      entityId: user.id,
+    })
+
+    return true
+  }
+
   async enterSubjectTeacherAccessCode(input: {
     codeHash: string
     tokenHash: string
@@ -629,6 +765,21 @@ export class FakeAuthRepository implements AuthRepository {
     return id
   }
 
+  /**
+   * Test helper: mirror a revocation or expiry write into the access-code
+   * lookup table used by `enterSubjectTeacherAccessCode`.
+   */
+  updateSubjectTeacherInvitation(
+    codeHash: string,
+    updates: { expiresAt?: Date; revokedAt?: Date | null },
+  ): void {
+    const invitation = this.invitations.get(codeHash)
+
+    if (invitation) {
+      Object.assign(invitation, updates)
+    }
+  }
+
   async addMembership(
     userId: string,
     schoolId: string,
@@ -729,6 +880,12 @@ export class FakeAuthRepository implements AuthRepository {
       failedLoginCount: 0,
       lastFailedLoginAt: null,
       lastLoginAt: null,
+      // Mirrors the database defaults: a directly-created account is not
+      // required to verify its email and is never forced to rotate a password.
+      emailVerifiedAt: null,
+      emailVerificationRequired: false,
+      mustChangePassword: false,
+      passwordChangedAt: null,
       createdAt: new Date(),
     }
 
@@ -761,6 +918,10 @@ export class FakeAuthRepository implements AuthRepository {
       failedLoginCount: 0,
       lastFailedLoginAt: null,
       lastLoginAt: null,
+      emailVerifiedAt: null,
+      emailVerificationRequired: false,
+      mustChangePassword: false,
+      passwordChangedAt: null,
       createdAt: new Date(),
     }
 
@@ -818,6 +979,27 @@ export class FakeAuthRepository implements AuthRepository {
 
     if (user) {
       user.lockedUntil = lockedUntil
+    }
+  }
+
+  /** Test helper: mark a registered administrator's email verified. */
+  verifyEmailFor(userIdOrEmail: string): void {
+    const user =
+      this.users.get(userIdOrEmail) ??
+      this.users.get(this.emailIndex.get(userIdOrEmail.toLowerCase()) ?? '')
+
+    if (user) {
+      user.emailVerifiedAt = new Date()
+      user.emailVerificationRequired = false
+    }
+  }
+
+  /** Test helper: simulate a teacher created with a temporary password. */
+  requirePasswordChangeFor(userId: string, required = true): void {
+    const user = this.users.get(userId)
+
+    if (user) {
+      user.mustChangePassword = required
     }
   }
 

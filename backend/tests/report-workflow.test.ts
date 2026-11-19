@@ -98,6 +98,7 @@ function addLaterPupil(
     lastName: string
     admissionNumber: string
   },
+  enrolledAt = new Date(Date.now() + 24 * 60 * 60 * 1000),
 ) {
   const extra = makeReportData({
     pupils: [
@@ -110,7 +111,7 @@ function addLaterPupil(
         },
         daysOpened: 60,
         daysAttended: 57,
-        enrolledAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        enrolledAt,
       },
     ],
   })
@@ -220,9 +221,29 @@ describe('ReportService term request', () => {
     )
   })
 
-  it('blocks a new request when a legacy class batch already produced reports', async () => {
-    const { service, repository } = requestService()
-    const existing = await repository.createBatch(
+  it('allows a new request that adds a pupil an earlier request did not cover', async () => {
+    const data = makeReportData({
+      pupils: [
+        {
+          id: 'pupil-kwame',
+          firstName: 'Kwame',
+          lastName: 'Appiah',
+          admissionNumber: 'BW/2026/0075',
+          scores: {
+            'sub-math': '80.00',
+            'sub-english': '68.70',
+            'sub-science': '82.60',
+          },
+          daysOpened: 66,
+          daysAttended: 57,
+        },
+      ],
+    })
+    const { service, repository } = requestService([data])
+
+    // A historical class-wide request. Its creation time predates the second
+    // pupil's enrollment, so that pupil is not part of the request snapshot.
+    const legacy = await repository.createBatch(
       admin,
       {
         academicYearId: 'year-1',
@@ -230,13 +251,89 @@ describe('ReportService term request', () => {
         classId: 'class-1',
         scope: 'CLASS',
         requestedPupilCount: 1,
-        status: 'COMPLETED_WITH_FAILURES',
-        releaseStatus: 'PENDING_PLATFORM_REVIEW',
+        status: 'PENDING',
+        releaseStatus: 'APPROVED',
       },
       audit,
     )
-    existing.generatedCount = 1
-    existing.failedCount = 1
+    repository.batches.get(legacy.id)!.createdAt = new Date(
+      Date.now() - 120_000,
+    )
+
+    addLaterPupil(
+      data,
+      {
+        id: 'pupil-dominic',
+        firstName: 'Dominic',
+        lastName: 'Yeboah',
+        admissionNumber: 'BW/2026/00754',
+      },
+      new Date(Date.now() - 60_000),
+    )
+
+    const historic = await service.generateIntoBatch(admin, legacy.id, audit)
+    expect(historic.batch.generatedCount).toBe(1)
+    expect(historic.results.map((item) => item.pupilId)).toEqual([
+      'pupil-kwame',
+    ])
+    repository.markReleased(legacy.id)
+
+    // The new term request covers both pupils. The pupil who already has a
+    // released final report is reused, not duplicated; only the new pupil is
+    // generated.
+    const request = await service.createRequest(
+      admin,
+      { academicYearId: 'year-1', academicTermId: 'term-1' },
+      audit,
+    )
+    expect(request.batch.requestedPupilCount).toBe(2)
+
+    const consolidated = await service.generateIntoBatch(
+      admin,
+      request.batch.id,
+      audit,
+    )
+
+    expect(consolidated.batch).toMatchObject({
+      status: 'COMPLETED',
+      requestedPupilCount: 2,
+      generatedCount: 1,
+      skippedCount: 1,
+      failedCount: 0,
+    })
+    expect(
+      consolidated.results.find((item) => item.pupilId === 'pupil-kwame'),
+    ).toMatchObject({ status: 'SKIPPED', version: 1 })
+    expect(
+      consolidated.results.find((item) => item.pupilId === 'pupil-dominic'),
+    ).toMatchObject({ status: 'GENERATED', version: 1 })
+
+    const kwameCard = [...repository.cards.values()].find(
+      (card) => card.pupilId === 'pupil-kwame',
+    )!
+    const kwameVersions = [...repository.versions.values()].filter(
+      (version) => version.reportCardId === kwameCard.id,
+    )
+    expect(kwameVersions).toHaveLength(1)
+    expect(repository.cards.size).toBe(2)
+    expect(repository.versions.size).toBe(2)
+  })
+
+  it('refuses a new request when every pupil already has a released final report', async () => {
+    const { service, repository } = requestService()
+    const request = await service.createRequest(
+      admin,
+      { academicYearId: 'year-1', academicTermId: 'term-1' },
+      audit,
+    )
+
+    const generated = await service.generateIntoBatch(
+      admin,
+      request.batch.id,
+      audit,
+    )
+    expect(generated.batch.generatedCount).toBe(3)
+    repository.markReleased(request.batch.id)
 
     await expect(
       service.createRequest(
@@ -245,9 +342,84 @@ describe('ReportService term request', () => {
         audit,
       ),
     ).rejects.toMatchObject({
-      statusCode: 409,
-      details: { batchId: existing.id },
+      statusCode: 400,
+      message: expect.stringMatching(/released final report/i),
     })
+
+    // Nothing was rewritten by the refused request.
+    expect(repository.cards.size).toBe(3)
+    expect(repository.versions.size).toBe(3)
+  })
+
+  it('consolidates four historical requests into one final report per pupil', async () => {
+    const data = makeReportData({
+      pupils: [
+        {
+          id: 'pupil-kwame',
+          firstName: 'Kwame',
+          lastName: 'Appiah',
+          admissionNumber: 'BW/2026/0075',
+          scores: {
+            'sub-math': '80.00',
+            'sub-english': '68.70',
+            'sub-science': '82.60',
+          },
+          daysOpened: 66,
+          daysAttended: 57,
+        },
+      ],
+    })
+    const { service, repository } = requestService([data])
+
+    // Bright World's four class-wide requests: same school, year, term and
+    // class, each with a one-pupil snapshot. They are duplicate generation
+    // requests, not separate subject submissions.
+    const batches = []
+
+    for (let index = 0; index < 4; index += 1) {
+      batches.push(
+        await repository.createBatch(
+          admin,
+          {
+            academicYearId: 'year-1',
+            academicTermId: 'term-1',
+            classId: 'class-1',
+            scope: 'CLASS',
+            requestedPupilCount: 1,
+            status: index === 0 ? 'PENDING' : 'FAILED',
+            releaseStatus: 'APPROVED',
+          },
+          audit,
+        ),
+      )
+    }
+
+    const first = await service.generateIntoBatch(
+      admin,
+      batches[0]!.id,
+      audit,
+    )
+    expect(first.batch.status).toBe('COMPLETED')
+    expect(first.batch.generatedCount).toBe(1)
+    repository.markReleased(batches[0]!.id)
+
+    for (const duplicate of batches.slice(1)) {
+      await expect(
+        service.generateIntoBatch(admin, duplicate.id, audit),
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        details: { code: 'ALREADY_CONSOLIDATED' },
+      })
+
+      // The duplicate request is left exactly as it was: no version, no
+      // failure, no status change.
+      expect(repository.batches.get(duplicate.id)?.status).toBe('FAILED')
+      expect(repository.batches.get(duplicate.id)?.generatedCount).toBe(0)
+    }
+
+    expect(repository.cards.size).toBe(1)
+    expect(repository.versions.size).toBe(1)
+    expect([...repository.versions.values()][0]!.batchId).toBe(batches[0]!.id)
   })
 
   it('allows a corrected request after a fully failed batch produced nothing', async () => {
@@ -500,6 +672,16 @@ describe('ReportService term request', () => {
     expect(repository.failures).toHaveLength(1)
     expect(repository.failures[0]!.code).toBe('GENERATION_FAILED')
 
+    const successful = [...repository.versions.entries()].map(
+      ([id, version]) => ({
+        id,
+        reportCardId: version.reportCardId,
+        checksum: version.checksum,
+        generatedAt: version.generatedAt.getTime(),
+      }),
+    )
+    expect(successful).toHaveLength(2)
+
     storage.failFor = null
 
     const retried = await service.generateIntoBatch(
@@ -517,6 +699,17 @@ describe('ReportService term request', () => {
     expect(retried.results[0]!.pupilId).toBe('pupil-esi')
     expect(repository.failures).toHaveLength(0)
     expect(repository.cards.size).toBe(3)
+
+    // The reports that succeeded before the retry are untouched: same version
+    // row, same checksum and same generation timestamp.
+    for (const version of successful) {
+      const stored = repository.versions.get(version.id)
+      expect(stored).toMatchObject({
+        reportCardId: version.reportCardId,
+        checksum: version.checksum,
+      })
+      expect(stored?.generatedAt.getTime()).toBe(version.generatedAt)
+    }
   })
 
   it('records a clear reason for an ineligible pupil instead of silently dropping them', async () => {
@@ -764,6 +957,18 @@ describe('ReportService term request', () => {
         .sort(),
     ).toEqual(['pupil-a', 'pupil-b'])
     expect(repository.versions.size).toBe(2)
+
+    // Both cards are built from every accepted subject for the class: multiple
+    // subject submissions contribute to one consolidated report per pupil.
+    for (const version of repository.versions.values()) {
+      const snapshot = version.snapshot as {
+        academic: { subjects: unknown[] }
+        source: { acceptedSubmissions: number }
+      }
+
+      expect(snapshot.academic.subjects).toHaveLength(3)
+      expect(snapshot.source.acceptedSubmissions).toBe(3)
+    }
 
     // A second Generate must not create duplicate versions.
     await expect(
@@ -1152,6 +1357,27 @@ describe('ReportWorkflowService orchestration', () => {
 
     expect(reports.failBatch).not.toHaveBeenCalled()
     expect(releases.recordGenerationFailure).toHaveBeenCalled()
+  })
+
+  it('treats an already consolidated request as a no-op, not a failure', async () => {
+    const { workflow, reports, releases } = workflowStubs()
+    releases.getPlatformBatch.mockResolvedValue(
+      requestDetail({ releaseStatus: 'APPROVED', generationStatus: 'FAILED' }),
+    )
+    reports.generateIntoBatch.mockRejectedValue(
+      new HttpError(
+        409,
+        'Every pupil in this request already has a released final report for this term.',
+        { code: 'ALREADY_CONSOLIDATED' },
+      ),
+    )
+
+    await expect(
+      workflow.generate(platformActor, 'batch-1', releaseAudit),
+    ).rejects.toMatchObject({ statusCode: 409 })
+
+    expect(reports.failBatch).not.toHaveBeenCalled()
+    expect(releases.recordGenerationFailure).not.toHaveBeenCalled()
   })
 
   it('refuses to generate an already released request', async () => {

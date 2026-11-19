@@ -163,14 +163,25 @@ model User {
   lastFailedLoginAt DateTime?
   lockedUntil       DateTime?
 
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  // Email verification and forced first-login password rotation. Both default
+  // to the behaviour existing accounts already have, so adding them never
+  // changes access for a pre-existing user. Only newly registered school
+  // administrators are marked as requiring verification, and only newly
+  // created teachers are marked as requiring a password change.
+  emailVerifiedAt           DateTime?
+  emailVerificationRequired Boolean   @default(false)
+  mustChangePassword        Boolean   @default(false)
+  passwordChangedAt         DateTime?
 
-  memberships         SchoolMembership[]
-  sessions            Session[]
-  passwordResetTokens PasswordResetToken[]
-  auditLogs           AuditLog[]           @relation("AuditActor")
-  resultAuditHistory  ResultAuditHistory[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships             SchoolMembership[]
+  sessions                Session[]
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  auditLogs               AuditLog[]               @relation("AuditActor")
+  resultAuditHistory      ResultAuditHistory[]
 
   // Phase 6A: platform pricing, invoice creation and payment verification.
   pricingRulesCreated  PricingRule[]         @relation("PricingRuleCreatedBy")
@@ -189,9 +200,9 @@ model User {
   platformSettingsUpdated PlatformSetting[] @relation("PlatformSettingUpdatedBy")
 
   // Phase 2 operational security and reconciliation.
-  reauthGrants          PlatformReauthGrant[]
-  notificationsRead     PlatformNotification[] @relation("PlatformNotificationReadBy")
-  paymentsReconciled    Payment[]              @relation("PaymentReconciledBy")
+  reauthGrants       PlatformReauthGrant[]
+  notificationsRead  PlatformNotification[] @relation("PlatformNotificationReadBy")
+  paymentsReconciled Payment[]              @relation("PaymentReconciledBy")
 
   @@index([isActive])
   @@index([isPlatformAdmin])
@@ -452,6 +463,55 @@ model PasswordResetToken {
   @@index([expiresAt])
 }
 
+/// Single-use school-administrator email verification token. Only a SHA-256
+/// hash is stored, and issuing a replacement revokes every outstanding token
+/// for the user so an older link can never be replayed.
+model EmailVerificationToken {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+
+  tokenHash String    @unique @db.VarChar(64)
+  expiresAt DateTime
+  usedAt    DateTime?
+  revokedAt DateTime?
+  ipAddress String?   @db.VarChar(45)
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt])
+  @@index([expiresAt])
+}
+
+/// Persisted outbox for transactional email. Rows are unique per business
+/// event (`dedupeKey`), so retrying the same operation cannot send a duplicate.
+/// Payloads contain rendered template data, never SMTP credentials.
+model EmailOutbox {
+  id        String            @id @default(uuid()) @db.Uuid
+  dedupeKey String            @unique @db.VarChar(200)
+  recipient String            @db.VarChar(320)
+  template  String            @db.VarChar(80)
+  payload   Json
+  status    EmailOutboxStatus @default(PENDING)
+
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  lastErrorCode String?   @db.VarChar(80)
+  sentAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([createdAt])
+}
+
+enum EmailOutboxStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3: school management
 // ---------------------------------------------------------------------------
@@ -679,22 +739,22 @@ model SubjectTeacherAssignment {
 
   /// The subject teacher's identity is stored directly on the assignment so no
   /// account, password or membership is required.
-  firstName String @db.VarChar(80)
-  lastName  String @db.VarChar(80)
-  email     String @db.VarChar(320)
+  firstName String  @db.VarChar(80)
+  lastName  String  @db.VarChar(80)
+  email     String  @db.VarChar(320)
   phone     String? @db.VarChar(32)
 
   createdAt DateTime  @default(now())
   endedAt   DateTime?
 
-  school     School           @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  class      SchoolClass      @relation(fields: [classId], references: [id], onDelete: Cascade)
-  subject    Subject          @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  school     School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  class      SchoolClass       @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject    Subject           @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   membership SchoolMembership? @relation(fields: [membershipId], references: [id], onDelete: Cascade)
 
   invitations       SubjectTeacherInvitation[]
   sessions          SubjectTeacherSession[]
-  resultSubmissions ResultSubmission[] @relation("ResultSubmissionCreatedByAssignment")
+  resultSubmissions ResultSubmission[]         @relation("ResultSubmissionCreatedByAssignment")
 
   @@unique([classId, subjectId, membershipId])
   @@index([schoolId, classId, subjectId, endedAt])
@@ -708,10 +768,10 @@ model SubjectTeacherAssignment {
 model SubjectTeacherSession {
   id String @id @default(uuid()) @db.Uuid
 
-  schoolId     String @db.Uuid
-  classId      String @db.Uuid
-  subjectId    String @db.Uuid
-  assignmentId String @db.Uuid
+  schoolId     String  @db.Uuid
+  classId      String  @db.Uuid
+  subjectId    String  @db.Uuid
+  assignmentId String  @db.Uuid
   accessCodeId String? @db.Uuid
 
   // Only the SHA-256 hash of the opaque session token is stored.
@@ -741,9 +801,9 @@ model SubjectTeacherSession {
 model SubjectTeacherInvitation {
   id String @id @default(uuid()) @db.Uuid
 
-  schoolId     String @db.Uuid
-  classId      String @db.Uuid
-  subjectId    String @db.Uuid
+  schoolId     String  @db.Uuid
+  classId      String  @db.Uuid
+  subjectId    String  @db.Uuid
   membershipId String? @db.Uuid
 
   /// Binds the code to one exact assignment. Legacy codes may not have one.
@@ -1059,16 +1119,16 @@ model ResultSubmission {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  school        School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  academicYear  AcademicYear      @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
-  academicTerm  AcademicTerm      @relation(fields: [academicTermId], references: [id], onDelete: Cascade)
-  class         SchoolClass       @relation(fields: [classId], references: [id], onDelete: Cascade)
-  subject       Subject           @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  policy        AssessmentPolicy? @relation(fields: [policyId], references: [id], onDelete: SetNull)
-  gradingScheme GradingScheme?    @relation(fields: [gradingSchemeId], references: [id], onDelete: SetNull)
-  createdBy     SchoolMembership?         @relation("ResultSubmissionCreatedBy", fields: [createdByMembershipId], references: [id], onDelete: Restrict)
+  school              School                    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  academicYear        AcademicYear              @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  academicTerm        AcademicTerm              @relation(fields: [academicTermId], references: [id], onDelete: Cascade)
+  class               SchoolClass               @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject             Subject                   @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  policy              AssessmentPolicy?         @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  gradingScheme       GradingScheme?            @relation(fields: [gradingSchemeId], references: [id], onDelete: SetNull)
+  createdBy           SchoolMembership?         @relation("ResultSubmissionCreatedBy", fields: [createdByMembershipId], references: [id], onDelete: Restrict)
   createdByAssignment SubjectTeacherAssignment? @relation("ResultSubmissionCreatedByAssignment", fields: [createdByAssignmentId], references: [id], onDelete: SetNull)
-  reviewer      SchoolMembership? @relation("ResultSubmissionReviewedBy", fields: [reviewerMembershipId], references: [id], onDelete: SetNull)
+  reviewer            SchoolMembership?         @relation("ResultSubmissionReviewedBy", fields: [reviewerMembershipId], references: [id], onDelete: SetNull)
 
   scores             PupilSubjectScore[]
   reviews            ResultReview[]
@@ -1686,12 +1746,12 @@ model Payment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  school      School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  invoice     SchoolInvoice     @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  submittedBy SchoolMembership? @relation("PaymentSubmittedBy", fields: [submittedByMembershipId], references: [id], onDelete: SetNull)
-  initiatedBy User?             @relation("PaymentInitiatedBy", fields: [initiatedByUserId], references: [id], onDelete: SetNull)
-  verifiedBy  User?             @relation("PaymentVerifiedBy", fields: [verifiedByUserId], references: [id], onDelete: SetNull)
-  reconciledBy User?            @relation("PaymentReconciledBy", fields: [reconciledByUserId], references: [id], onDelete: SetNull)
+  school       School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  invoice      SchoolInvoice     @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  submittedBy  SchoolMembership? @relation("PaymentSubmittedBy", fields: [submittedByMembershipId], references: [id], onDelete: SetNull)
+  initiatedBy  User?             @relation("PaymentInitiatedBy", fields: [initiatedByUserId], references: [id], onDelete: SetNull)
+  verifiedBy   User?             @relation("PaymentVerifiedBy", fields: [verifiedByUserId], references: [id], onDelete: SetNull)
+  reconciledBy User?             @relation("PaymentReconciledBy", fields: [reconciledByUserId], references: [id], onDelete: SetNull)
 
   evidence       PaymentEvidence[]
   verifications  PaymentVerification[]

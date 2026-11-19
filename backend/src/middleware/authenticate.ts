@@ -82,6 +82,26 @@ export function createAuthenticate(repository: AuthRepository) {
       // Activity tracking must never block or fail a valid request.
       void repository.touchSession(session.id).catch(() => undefined)
 
+      // A user who still has to replace a temporary password may only reach the
+      // endpoints needed to do so. This closes the direct-API bypass: every
+      // school, report, assessment and billing route authenticates through this
+      // middleware, so none of them can be used before the password changes.
+      if (context.user.mustChangePassword === true) {
+        const path = (req.originalUrl ?? req.path).split('?')[0] ?? ''
+        const allowed =
+          path === '/api/auth/me' ||
+          path === '/api/auth/logout' ||
+          path === '/api/auth/change-password' ||
+          path.startsWith('/api/auth/email-verification/')
+
+        if (!allowed) {
+          throw new HttpError(
+            403,
+            'Set a new password before continuing. Your account still uses its temporary password.',
+          )
+        }
+      }
+
       req.auth = {
         user: context.user,
         // Only memberships that currently grant access are exposed. A user who

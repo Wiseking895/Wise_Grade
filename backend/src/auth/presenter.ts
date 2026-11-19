@@ -14,6 +14,10 @@ export interface PublicUser {
   firstName: string
   lastName: string
   isPlatformAdmin: boolean
+  /** False only when the account still has to confirm its email address. */
+  emailVerified: boolean
+  emailVerificationRequired: boolean
+  mustChangePassword: boolean
   createdAt: string
 }
 
@@ -50,6 +54,9 @@ export function toPublicUser(user: UserRecord): PublicUser {
     firstName: user.firstName,
     lastName: user.lastName,
     isPlatformAdmin: user.isPlatformAdmin,
+    emailVerified: user.emailVerifiedAt != null,
+    emailVerificationRequired: user.emailVerificationRequired === true,
+    mustChangePassword: user.mustChangePassword === true,
     createdAt: user.createdAt.toISOString(),
   }
 }

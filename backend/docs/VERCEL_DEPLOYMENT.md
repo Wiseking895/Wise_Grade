@@ -95,7 +95,19 @@ placeholders; never commit real values.
 | `AUTH_SECRET` | Long random secret; also derives MFA key material |
 | `CORS_ORIGINS` | `https://wisegrade.app` (exact origin, no wildcard). Add any other exact frontend origin that must call the API, separated by commas. |
 | `FRONTEND_URL` | `https://wisegrade.app`. Required: without it the schema falls back to `http://localhost:5173`, which production validation rejects, so the API fails to boot. |
-| `CRON_SECRET` | Random value, at least 16 characters |
+| `BACKEND_URL` | `https://wisegradebackend.vercel.app` |
+| `CRON_SECRET` | Random value, at least 16 characters. Vercel Cron sends it as a bearer token to both `/api/internal/calendar` and `/api/internal/email`. |
+| `EMAIL_ENABLED` | `true` in production |
+| `SMTP_HOST` | `smtp-relay.brevo.com` |
+| `SMTP_PORT` | `587` |
+| `SMTP_SECURE` | `false` (STARTTLS) |
+| `SMTP_USER` | Brevo SMTP login |
+| `SMTP_PASS` | Brevo SMTP key (secret) |
+| `EMAIL_FROM_NAME` | `WiseGrade` |
+| `EMAIL_FROM_ADDRESS` | `no-reply@wisegrade.app` (must be a Brevo-verified sender) |
+| `EMAIL_REPLY_TO` | `wiseempire62@gmail.com` |
+| `EMAIL_VERIFICATION_EXPIRY_HOURS` | `24` |
+| `SUBJECT_TEACHER_ACCESS_CODE_EXPIRY_DAYS` | `7` |
 | `CALENDAR_SCHEDULER_ENABLED` | `true` |
 | `CALENDAR_SCHEDULER_INTERVAL_MINUTES` | `1440` for the included daily Cron |
 | `R2_ACCOUNT_ID` | Cloudflare R2 |
@@ -114,6 +126,7 @@ placeholders; never commit real values.
 
 | Name | Notes |
 | ---- | ----- |
+| `EMAIL_TEST_RECIPIENT` | Verified mailbox that restricts `POST /api/platform/email/test`. When unset, the signed-in platform administrator's own address is used. |
 | `DATABASE_POOL_MAX` | Per-instance pg pool size. Default `5`. Do not raise without checking Neon limits. |
 | `PAYMENT_PROVIDER` | Leave unset until a real provider is integrated. `mock` is refused in production. |
 | `PAYMENT_SECRET_KEY` | Reserved for a real provider. |
@@ -138,23 +151,90 @@ must never be configured on Vercel.
 Vercel Cron runs against the production deployment only. Preview deployments do
 not receive Cron invocations.
 
-## 4. Database migration
+### Local profile safety
 
-The new migration adds only a `SchedulerLock` table and one seeded row. It does
-not modify existing tables or data.
+Local development uses `backend/.env`, which contains only the local PostgreSQL
+database, local Vite origins and `EMAIL_ENABLED=false`. Production/Neon values
+are preserved in the git-ignored `backend/.env.production.local` and are never
+loaded automatically. Select that profile explicitly for read-only checks or
+owner-approved migration tooling:
 
-Run from `backend/` against Neon **before** the first production deployment (or
-immediately after, before relying on the scheduler):
-
-```bash
-# Use the direct/unpooled Neon URL for migrations
-$env:DIRECT_DATABASE_URL="postgresql://...direct..."; npm run prisma:migrate:deploy
+```powershell
+$env:GRADELY_ENV_FILE='.env.production.local'
+npx prisma migrate status
+Remove-Item Env:GRADELY_ENV_FILE
 ```
 
-PowerShell equivalent is shown. On macOS/Linux:
+Duplicate keys in one env file are rejected at load time. Vercel uses dashboard
+variables and ignores these files.
 
-```bash
-DIRECT_DATABASE_URL="postgresql://...direct..." npm run prisma:migrate:deploy
+### Transactional email and outbox Cron
+
+`vercel.json` registers two daily Crons:
+
+| Path | Schedule | Purpose |
+| ---- | -------- | ------- |
+| `/api/internal/calendar` | `0 1 * * *` | Academic calendar scheduler |
+| `/api/internal/email` | `0 2 * * *` | Retry eligible non-sensitive outbox emails |
+
+Both endpoints accept `GET` and `POST`, require
+`Authorization: Bearer $CRON_SECRET`, return `503` when the secret is not
+configured and `401` for a mismatch. The email endpoint only drains rows already
+created by business events; it cannot send arbitrary email.
+
+Outbox rows are claimed with an atomic compare-and-set on `attempts` before
+delivery, so concurrent Cron invocations or an inline send cannot deliver the
+same row twice. A crashed worker's lease expires and a later run retries it
+(at-least-once). Non-sensitive rows back off and stop after five attempts.
+
+Sensitive templates (administrator verification links, temporary teacher
+passwords and subject access codes) are stored with redacted payloads and are
+never retried. A failure marks them `FAILED`; the business flow requires a fresh
+resend or reissue.
+
+On Vercel Pro, change the email schedule to `*/15 * * * *` for tighter retry
+latency. Keep the daily schedule on Hobby.
+
+#### Brevo authentication: 535 versus 525
+
+Brevo returns two distinct SMTP authentication failures:
+
+| Code | Meaning | Fix |
+| ---- | ------- | --- |
+| `535` | Invalid SMTP login or SMTP key | Copy the **Login** and **SMTP key** from Brevo → Settings → SMTP & API. The key is shown only once; generate a new one if lost. |
+| `525` | Unauthorized IP address | Brevo's **block unknown IP addresses for SMTP keys** setting is enabled and the caller's egress IP is not on the allow-list. Add the IP or disable IP blocking for the sending key. |
+
+Vercel Functions use shared, dynamic egress IPs, so IP allow-listing a Vercel
+deployment is not reliable. Either disable IP blocking for the SMTP key used by
+Gradely, or send through a static-egress proxy and authorize that address.
+A local `verify()` from a developer machine will also fail with `525` unless
+that machine's public IP is authorized.
+
+The sender address does not need individual verification when the domain is
+fully authenticated in Brevo. `no-reply@wisegrade.app` is valid only after
+`wisegrade.app` authentication is complete.
+
+## 4. Database migration
+
+The transactional-email migration (`20261118120000_transactional_email`) is
+already applied to production and was verified read-only: it is additive, its
+checksum matches the local migration, and it changed no existing rows.
+
+Do not run further production migrations without explicit owner approval.
+
+For a future approved migration, use the direct/unpooled Neon URL. The
+production profile already contains `DIRECT_DATABASE_URL`:
+
+```powershell
+$env:GRADELY_ENV_FILE='.env.production.local'
+npm run prisma:migrate:deploy
+Remove-Item Env:GRADELY_ENV_FILE
+```
+
+You can also export the direct URL explicitly:
+
+```powershell
+$env:DIRECT_DATABASE_URL="postgresql://...direct..."; npm run prisma:migrate:deploy
 ```
 
 `prisma.config.ts` prefers `DIRECT_DATABASE_URL` and falls back to
@@ -163,8 +243,10 @@ cold start cannot mutate the schema.
 
 Check state without changing anything:
 
-```bash
+```powershell
+$env:GRADELY_ENV_FILE='.env.production.local'
 npm run prisma:migrate:status
+Remove-Item Env:GRADELY_ENV_FILE
 ```
 
 ## 5. Scheduler strategy
@@ -216,7 +298,7 @@ scheduler, set `CALENDAR_SCHEDULER_ENABLED=false` and remove the Cron entry.
 
 1. Set the Neon pooled URL and all production variables in the existing
    `gradely-backend` Vercel project (or create it if it has been removed).
-2. Run the migration from section 4 against Neon.
+2. Run the migration from section 4 against Neon only with owner approval.
 3. Confirm the project uses repository `Wiseking895/Wise_Grade`, Root Directory
    `backend`, Framework Preset Other, and the latest `vercel.json`.
 4. Deploy. The build runs `prisma generate` and `tsc`.
@@ -224,9 +306,10 @@ scheduler, set `CALENDAR_SCHEDULER_ENABLED=false` and remove the Cron entry.
    `https://wisegradebackend.vercel.app/api/ready`. `health` proves the function is running; `ready` proves Neon
    is reachable from the deployed function.
 6. Verify CORS with a preflight from the frontend origin.
-7. Verify the scheduler endpoint with the bearer token (expect a run summary or
-   `executed: false, reason: LOCKED` if another run is active).
-8. Read the backend URL and update the frontend (section 8).
+7. Verify both scheduler endpoints with the bearer token (expect a run summary or
+   `executed: false, reason: LOCKED` for the calendar).
+8. Run one platform-admin SMTP test after the Brevo sender is verified.
+9. Read the backend URL and update the frontend (section 8).
 
 ## 7. Health verification
 

@@ -4,8 +4,6 @@ import {
   countReleaseBatches,
   eligibilityMessages,
   isResubmission,
-  platformActionAllowed,
-  platformActionsFor,
   releaseAllowsPreview,
   releaseReasonError,
   schoolCanSubmit,
@@ -105,62 +103,6 @@ describe('school release submission helpers', () => {
       ['The invoice is not fully paid.', 'A PDF is missing.'],
     )
     assert.deepEqual(eligibilityMessages([]), [])
-  })
-})
-
-describe('platform release actions', () => {
-  it('offers separate approve, return, hold and release actions', () => {
-    assert.deepEqual(platformActionsFor('PENDING_PLATFORM_REVIEW'), [
-      'approve',
-      'return',
-      'hold',
-    ])
-    assert.deepEqual(platformActionsFor('APPROVED'), [
-      'release',
-      'return',
-      'hold',
-    ])
-    assert.deepEqual(platformActionsFor('GENERATED'), ['queue', 'hold'])
-    assert.deepEqual(platformActionsFor('RETURNED'), ['hold'])
-    assert.deepEqual(platformActionsFor('ON_HOLD'), ['unhold'])
-    assert.deepEqual(platformActionsFor('RELEASED'), [])
-  })
-
-  it('never allows approval to act as release', () => {
-    assert.equal(
-      platformActionAllowed('approve', 'PENDING_PLATFORM_REVIEW', true),
-      true,
-    )
-    assert.equal(platformActionAllowed('release', 'PENDING_PLATFORM_REVIEW', true), false)
-    assert.equal(platformActionAllowed('release', 'APPROVED', true), true)
-    assert.equal(platformActionAllowed('approve', 'APPROVED', true), false)
-  })
-
-  it('requires backend eligibility for approve and release only', () => {
-    assert.equal(platformActionAllowed('approve', 'PENDING_PLATFORM_REVIEW', false), false)
-    assert.equal(platformActionAllowed('release', 'APPROVED', false), false)
-    assert.equal(platformActionAllowed('return', 'PENDING_PLATFORM_REVIEW', false), true)
-    assert.equal(platformActionAllowed('hold', 'APPROVED', false), true)
-  })
-
-  it('allows return only from a pending or approved batch', () => {
-    for (const status of ALL_RELEASE_STATUSES) {
-      assert.equal(
-        platformActionAllowed('return', status, true),
-        status === 'PENDING_PLATFORM_REVIEW' || status === 'APPROVED',
-      )
-    }
-  })
-
-  it('allows hold on every state except released and already held', () => {
-    for (const status of ALL_RELEASE_STATUSES) {
-      assert.equal(
-        platformActionAllowed('hold', status, true),
-        status !== 'RELEASED' && status !== 'ON_HOLD',
-      )
-    }
-    assert.equal(platformActionAllowed('unhold', 'ON_HOLD', true), true)
-    assert.equal(platformActionAllowed('unhold', 'APPROVED', true), false)
   })
 })
 

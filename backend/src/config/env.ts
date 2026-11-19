@@ -167,6 +167,48 @@ const envSchema = z
     PAYMENT_PROVIDER: z.string().min(1).optional(),
     PAYMENT_SECRET_KEY: z.string().min(1).optional(),
     PAYMENT_WEBHOOK_SECRET: z.string().min(1).optional(),
+
+    // -----------------------------------------------------------------------
+    // Transactional email (Brevo SMTP relay)
+    // -----------------------------------------------------------------------
+    // Every value is optional so the API still starts in environments that do
+    // not send mail (local unit tests, preview deployments). When EMAIL_ENABLED
+    // is true the email service validates the transport at first use and
+    // reports a sanitized configuration error instead of crashing the API.
+    SMTP_HOST: z.string().trim().min(1).optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+    SMTP_SECURE: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    SMTP_USER: z.string().trim().min(1).optional(),
+    SMTP_PASS: z.string().min(1).optional(),
+    EMAIL_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    EMAIL_FROM_NAME: z.string().trim().min(1).default('WiseGrade'),
+    EMAIL_FROM_ADDRESS: z.string().trim().min(1).optional(),
+    EMAIL_REPLY_TO: z.string().trim().min(1).optional(),
+    /**
+     * Optional fixed recipient for the administrator-only SMTP test. When it is
+     * unset the authenticated platform administrator's own address is used, so
+     * the endpoint can never be pointed at an arbitrary recipient.
+     */
+    EMAIL_TEST_RECIPIENT: z.string().trim().min(1).optional(),
+    EMAIL_VERIFICATION_EXPIRY_HOURS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(168)
+      .default(24),
+    SUBJECT_TEACHER_ACCESS_CODE_EXPIRY_DAYS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(30)
+      .default(7),
+    BACKEND_URL: z.url().optional(),
   })
   .superRefine((value, ctx) => {
     if (value.NODE_ENV !== 'production') {

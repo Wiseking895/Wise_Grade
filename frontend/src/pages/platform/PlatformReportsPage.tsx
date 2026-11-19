@@ -136,7 +136,7 @@ function canGenerateBatch(batch: ReportReleaseBatchSummary): boolean {
     batch.releaseStatus !== 'ON_HOLD' &&
     batch.releaseStatus !== 'RETURNED' &&
     batch.generationStatus !== 'RUNNING' &&
-    !(batch.generationStatus === 'COMPLETED' && batch.reportCount > 0)
+    batch.generationStatus !== 'COMPLETED'
   )
 }
 
@@ -388,7 +388,11 @@ export default function PlatformReportsPage() {
           outcome.batch.releaseStatus === 'RELEASED'
             ? `Generated ${outcome.batch.reportCount} report${
                 outcome.batch.reportCount === 1 ? '' : 's'
-              } for ${outcome.batch.schoolName}. The school can view them now.`
+              } for ${outcome.batch.schoolName}${
+                outcome.batch.skippedCount > 0
+                  ? `; ${outcome.batch.skippedCount} pupil(s) already had a released final report and were not duplicated`
+                  : ''
+              }. The school can view them now.`
             : `Generated ${outcome.batch.generatedCount} of ${
                 outcome.batch.requestedPupilCount
               } reports for ${outcome.batch.schoolName}. ${

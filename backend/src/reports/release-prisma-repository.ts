@@ -250,7 +250,10 @@ async function assertEligibleTx(tx: Tx, row: BatchRow): Promise<void> {
     issues.push('GENERATION_FAILURES')
   }
 
-  if (row.skippedCount > 0) {
+  // Request batches may reuse an already released final report. Direct
+  // generation skips remain a release blocker because those versions may not
+  // be attached to the batch or visible to the school.
+  if (row.skippedCount > 0 && row.submittedAt === null) {
     issues.push('GENERATION_SKIPPED')
   }
 

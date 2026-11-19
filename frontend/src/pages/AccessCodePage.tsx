@@ -85,6 +85,14 @@ export default function AccessCodePage() {
           </div>
         ) : null}
 
+        {formError ? (
+          <p className="text-xs leading-relaxed text-gradely-muted">
+            Access codes are bound to one class and one subject. If your code has
+            expired, been replaced, or belongs to a different assignment, ask the
+            class teacher responsible for that class for a replacement code.
+          </p>
+        ) : null}
+
         <FormField
           label="Access code"
           name="code"

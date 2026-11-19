@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   ApiError,
+  changePasswordRequest,
   clearSubjectSessionHint,
+  confirmEmailVerificationRequest,
   enterAccessCodeRequest,
   fetchSession,
   fetchSubjectSession,
@@ -10,6 +12,7 @@ import {
   logoutRequest,
   registerSchoolRequest,
   rememberSubjectSessionHint,
+  resendEmailVerificationRequest,
   subjectLogoutRequest,
 } from '../lib/api'
 import { AuthContext } from './auth-context'
@@ -134,6 +137,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return subjectSession
   }, [])
 
+  const confirmEmailVerification = useCallback(
+    async (token: string) => {
+      const result = await confirmEmailVerificationRequest(token)
+      // The endpoint works with or without a session. Refresh only when this
+      // browser actually holds the account session whose flags changed.
+      if (state.status === 'authenticated' && state.user) {
+        await refresh()
+      }
+      return result.message
+    },
+    [refresh, state.status, state.user],
+  )
+
+  const resendEmailVerification = useCallback(async () => {
+    const result = await resendEmailVerificationRequest()
+    return result.message
+  }, [])
+
+  const changePassword = useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      await changePasswordRequest({ currentPassword, newPassword })
+      await refresh()
+    },
+    [refresh],
+  )
+
   const logout = useCallback(async () => {
     const subjectSession = state.subjectSession
 
@@ -157,10 +186,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       registerSchool,
       enterAccessCode,
+      confirmEmailVerification,
+      resendEmailVerification,
+      changePassword,
       logout,
       refresh,
     }),
-    [state, login, registerSchool, enterAccessCode, logout, refresh],
+    [
+      state,
+      login,
+      registerSchool,
+      enterAccessCode,
+      confirmEmailVerification,
+      resendEmailVerification,
+      changePassword,
+      logout,
+      refresh,
+    ],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -46,12 +46,18 @@ export default function RegisterSchoolPage() {
   const [submitting, setSubmitting] = useState(false)
 
   if (status === 'authenticated') {
-    return (
-      <Navigate
-        to={user?.isPlatformAdmin ? '/platform' : '/dashboard'}
-        replace
-      />
-    )
+    const destination = user?.mustChangePassword
+      ? '/change-password'
+      : user &&
+          !user.isPlatformAdmin &&
+          user.emailVerificationRequired &&
+          !user.emailVerified
+        ? '/verify-email'
+        : user?.isPlatformAdmin
+          ? '/platform'
+          : '/dashboard'
+
+    return <Navigate to={destination} replace />
   }
 
   function updateField(field: RegistrationField, value: string) {
@@ -115,7 +121,7 @@ export default function RegisterSchoolPage() {
           originalName: logoFile.name,
         },
       })
-      navigate('/dashboard', { replace: true })
+      navigate('/verify-email', { replace: true })
     } catch (error) {
       if (error instanceof ApiError) {
         setFormError(error.message)

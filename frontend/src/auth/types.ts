@@ -9,6 +9,12 @@ export interface AuthUser {
   firstName: string
   lastName: string
   isPlatformAdmin: boolean
+  /** True once an administrator has confirmed ownership of the email address. */
+  emailVerified: boolean
+  /** True only for accounts the API requires to verify before administration. */
+  emailVerificationRequired: boolean
+  /** True while a temporary first-login password must be replaced. */
+  mustChangePassword: boolean
   createdAt: string
 }
 

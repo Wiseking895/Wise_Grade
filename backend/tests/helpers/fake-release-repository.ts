@@ -43,6 +43,7 @@ export interface FakeReleaseSeedOptions {
   failedCount?: number
   skippedCount?: number
   generatedCount?: number
+  submittedAt?: Date | null
   failures?: ReportReleaseBatchRecord['failures']
 }
 
@@ -126,7 +127,7 @@ export async function buildReleaseSeed(
     completedAt: new Date('2026-11-01T10:01:00.000Z'),
     releaseStatus: options.releaseStatus ?? 'GENERATED',
     previousReleaseStatus: null,
-    submittedAt: null,
+    submittedAt: options.submittedAt ?? null,
     submittedByMembershipId: null,
     reviewedAt: null,
     reviewedByUserId: null,

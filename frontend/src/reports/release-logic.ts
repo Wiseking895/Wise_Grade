@@ -4,14 +4,6 @@ import type {
   ReportReleaseStatus,
 } from './types'
 
-export type PlatformReleaseAction =
-  | 'queue'
-  | 'approve'
-  | 'return'
-  | 'hold'
-  | 'unhold'
-  | 'release'
-
 /**
  * Eligibility is decided by the backend. This helper only explains why the
  * submit button is unavailable; the API remains the source of truth.
@@ -27,47 +19,10 @@ export function isResubmission(status: ReportReleaseStatus): boolean {
   return status === 'RETURNED'
 }
 
-export function platformActionsFor(
-  status: ReportReleaseStatus,
-): PlatformReleaseAction[] {
-  switch (status) {
-    case 'PENDING_PLATFORM_REVIEW':
-      return ['approve', 'return', 'hold']
-    case 'APPROVED':
-      return ['release', 'return', 'hold']
-    case 'GENERATED':
-      return ['queue', 'hold']
-    case 'RETURNED':
-      return ['hold']
-    case 'ON_HOLD':
-      return ['unhold']
-    case 'RELEASED':
-      return []
-  }
-}
-
-export function platformActionAllowed(
-  action: PlatformReleaseAction,
-  status: ReportReleaseStatus,
-  eligible: boolean,
-): boolean {
-  switch (action) {
-    case 'queue':
-      return status === 'GENERATED'
-    case 'approve':
-      return status === 'PENDING_PLATFORM_REVIEW' && eligible
-    case 'release':
-      return status === 'APPROVED' && eligible
-    case 'return':
-      return status === 'PENDING_PLATFORM_REVIEW' || status === 'APPROVED'
-    case 'hold':
-      return status !== 'RELEASED' && status !== 'ON_HOLD'
-    case 'unhold':
-      return status === 'ON_HOLD'
-  }
-}
-
-/** A report is only readable by the school after an explicit release action. */
+/**
+ * A report is only readable by the school after the platform generate action
+ * has produced and released it. There is no separate developer approval step.
+ */
 export function releaseAllowsPreview(
   status: ReportReleaseStatus | null | undefined,
 ): boolean {

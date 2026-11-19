@@ -350,6 +350,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     const schoolId = registrationData.school.id
     trackSchool(schoolId)
     trackUser(registrationData.user.id)
+    await prisma.user.update({
+      where: { id: registrationData.user.id },
+      data: { emailVerifiedAt: new Date(), emailVerificationRequired: false },
+    })
 
     const years = await admin.get(
       `/api/schools/${schoolId}/academic-years`,
@@ -415,6 +419,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     }>(classTeacher)
     expect(registered.class.id).toBe(basicOne!.id)
     trackUser(registered.teacher.userId)
+    await prisma.user.update({
+      where: { id: registered.teacher.userId },
+      data: { mustChangePassword: false },
+    })
 
     fixture = {
       schoolId,
@@ -532,6 +540,13 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
       teacher: { userId: string }
     }>(response)
     trackUser(registered.teacher.userId)
+    // Fixture marks the teacher's first-login rotation as already complete so
+    // this test can focus on subject registration. Forced rotation is covered
+    // by dedicated route tests.
+    await prisma.user.update({
+      where: { id: registered.teacher.userId },
+      data: { mustChangePassword: false },
+    })
 
     const ctAgent = await login(email)
     const frenchName = `Integration French ${suffix}`
@@ -614,6 +629,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
       teacher: { userId: string }
     }>(retry)
     trackUser(retryRegistered.teacher.userId)
+    await prisma.user.update({
+      where: { id: retryRegistered.teacher.userId },
+      data: { mustChangePassword: false },
+    })
 
     const retryAgent = await login(retryEmail)
     const retrySubject = await retryAgent
@@ -656,6 +675,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
       teacher: { userId: string }
     }>(registration)
     trackUser(registered.teacher.userId)
+    await prisma.user.update({
+      where: { id: registered.teacher.userId },
+      data: { mustChangePassword: false },
+    })
 
     const ctAgent = await login(classTeacherEmail)
 
@@ -2050,6 +2073,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
     )
     trackSchool(otherData.school.id)
     trackUser(otherData.user.id)
+    await prisma.user.update({
+      where: { id: otherData.user.id },
+      data: { emailVerifiedAt: new Date(), emailVerificationRequired: false },
+    })
 
     const crossSchool = await otherAdmin.get(
       `/api/schools/${fixture.schoolId}/assessments/policies`,

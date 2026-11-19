@@ -384,13 +384,6 @@ export function generatePlatformReports(
   )
 }
 
-export function queuePlatformReportBatch(batchId: string) {
-  return apiRequest<{ batch: ReportReleaseBatchDetail }>(
-    `/api/platform/reports/batches/${batchId}/queue`,
-    { method: 'POST', body: {} },
-  )
-}
-
 export function listPlatformReportBatches(filter: PlatformReportBatchFilter) {
   return apiRequest<{ batches: ReportReleaseBatchSummary[] }>(
     `/api/platform/reports/batches${queryString({

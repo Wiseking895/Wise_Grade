@@ -790,10 +790,50 @@ export class ReportService {
       )
     }
 
+    // Reports are consolidated per pupil per term. A pupil whose released
+    // final report still matches the accepted data needs no new version, so a
+    // request that would only repeat already-reported pupils is refused. This
+    // is what lets a later request cover a newly enrolled pupil without
+    // duplicating the reports of everyone else.
+    const datasets = await this.loadTermDatasets(
+      actor,
+      input.academicYearId,
+      input.academicTermId,
+    )
+    let uncoveredEligiblePupils = 0
+
+    for (const data of datasets) {
+      for (const build of buildReportSet(data).builds) {
+        if (!build.eligible || !build.snapshot) {
+          continue
+        }
+
+        const reusable = await this.findReusableFinalReport(
+          actor,
+          input.academicTermId,
+          build.snapshot,
+          build.pupil.id,
+        )
+
+        if (reusable === null) {
+          uncoveredEligiblePupils += 1
+        }
+      }
+    }
+
+    if (uncoveredEligiblePupils === 0) {
+      throw new HttpError(
+        400,
+        'Every eligible pupil already has a released final report for this term. There is nothing new to request.',
+      )
+    }
+
     // The request snapshot is the current on-roll population for the term, not
     // only the currently eligible subset. Ineligible pupils stay in the
     // snapshot and are recorded with a clear reason during generation, so the
-    // request counters always reconcile with the pupils it covered.
+    // request counters always reconcile with the pupils it covered. Pupils who
+    // already have a matching released final report are counted as skipped
+    // rather than generating a duplicate version.
     const requestedPupilCount = classes.reduce(
       (total, item) => total + item.pupilCount,
       0,
@@ -1016,9 +1056,12 @@ export class ReportService {
   }
 
   /**
-   * Generates every eligible class into an existing request batch. No report is
-   * skipped: a fresh version is always attached to this batch, which guarantees
-   * the approved request has linked artifacts and avoids cross-batch reuse.
+   * Generates an existing request into the pupil snapshot it was created with.
+   *
+   * A pupil whose identical final report has already been released is counted
+   * as skipped instead of receiving a duplicate version. If every pupil in the
+   * request is already consolidated, nothing is written and the request is
+   * left untouched so its audit history remains accurate.
    */
   async generateIntoBatch(
     actor: ReportActor,
@@ -1160,6 +1203,40 @@ export class ReportService {
       )
     }
 
+    // Reuse a final report only when it has been released and the live
+    // accepted data still produces the identical snapshot. This keeps one
+    // consolidated report per pupil per term across historical requests while
+    // still allowing a genuinely corrected report to create a new version.
+    const reusableVersions = new Map<string, number>()
+
+    for (const item of targets) {
+      if (!item.build.snapshot) {
+        continue
+      }
+
+      const reusable = await this.findReusableFinalReport(
+        actor,
+        batch.academicTermId,
+        item.build.snapshot,
+        item.build.pupil.id,
+      )
+
+      if (reusable !== null) {
+        reusableVersions.set(item.build.pupil.id, reusable)
+      }
+    }
+
+    if (reusableVersions.size === targets.length) {
+      throw new HttpError(
+        409,
+        'Every pupil in this request already has a released final report for this term. No new report version was generated.',
+        {
+          code: 'ALREADY_CONSOLIDATED',
+          pupilIds: [...reusableVersions.keys()],
+        },
+      )
+    }
+
     const targetPupilIds = new Set(
       targets.map((item) => item.build.pupil.id),
     )
@@ -1184,6 +1261,7 @@ export class ReportService {
 
     return this.runIntoBatch(actor, batch, targets, audit, {
       allowSkip: false,
+      reusableVersions,
       previousGenerated,
       previousSkipped,
       previousFailed,
@@ -1245,6 +1323,12 @@ export class ReportService {
     audit: ReportAuditContext,
     options: {
       allowSkip: boolean
+      /**
+       * Released final reports that already match the live data, keyed by
+       * pupil. Request generation reuses them instead of creating a duplicate
+       * version. Direct generation leaves this unset.
+       */
+      reusableVersions?: Map<string, number>
       previousGenerated: number
       previousSkipped: number
       previousFailed: number
@@ -1302,14 +1386,18 @@ export class ReportService {
       }
 
       try {
-        const skipped = options.allowSkip
-          ? await this.canSkipGeneration(
-              actor,
-              batch.academicTermId,
-              build.snapshot,
-              build.pupil.id,
-            )
-          : null
+        const reusable = options.reusableVersions?.get(build.pupil.id)
+        const skipped =
+          reusable !== undefined
+            ? reusable
+            : options.allowSkip
+              ? await this.canSkipGeneration(
+                  actor,
+                  batch.academicTermId,
+                  build.snapshot,
+                  build.pupil.id,
+                )
+              : null
 
         if (skipped !== null) {
           skippedCount += 1
@@ -1894,6 +1982,51 @@ export class ReportService {
     })
 
     if (!latest || !isRecord(latest.snapshot)) {
+      return null
+    }
+
+    if (latest.snapshot.fingerprint !== snapshot.fingerprint) {
+      return null
+    }
+
+    try {
+      const existing = await this.storage.getObject(latest.storageKey)
+
+      if (!existing || sha256(existing) !== latest.checksum) {
+        return null
+      }
+    } catch {
+      return null
+    }
+
+    return latest.version
+  }
+
+  /**
+   * Returns the existing version number when the pupil's latest final report
+   * is already released and still matches the live accepted data.
+   *
+   * This is the consolidation rule: one pupil receives one final report per
+   * term, and later requests reuse it rather than appending duplicate versions.
+   * A changed score, remark or attendance figure produces a different
+   * fingerprint, so a genuine correction still creates a new version.
+   */
+  private async findReusableFinalReport(
+    actor: ReportActor,
+    academicTermId: string,
+    snapshot: ReportSnapshot,
+    pupilId: string,
+  ): Promise<number | null> {
+    const latest = await this.repository.getLatestVersionForPupil(actor, {
+      academicTermId,
+      pupilId,
+    })
+
+    if (
+      !latest ||
+      latest.releaseStatus !== 'RELEASED' ||
+      !isRecord(latest.snapshot)
+    ) {
       return null
     }
 

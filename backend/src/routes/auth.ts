@@ -23,6 +23,8 @@ import {
   type PlatformNotifier,
 } from '../platform/notifications.js'
 import {
+  changePasswordSchema,
+  emailVerificationConfirmSchema,
   loginSchema,
   parseBody,
   passwordResetConfirmSchema,
@@ -36,6 +38,16 @@ import {
   schoolLogoStorageKey,
 } from '../lib/school-branding.js'
 import type { StorageAdapter } from '../storage/storage.js'
+import {
+  NoopEmailService,
+  type EmailService,
+} from '../email/service.js'
+import { formatEmailDateTime } from '../email/templates.js'
+import {
+  changePasswordUrl,
+  dashboardUrl,
+  verificationUrl,
+} from '../email/links.js'
 
 const PASSWORD_RESET_TTL_MINUTES = 60
 const LOGIN_LOCK_THRESHOLD = 5
@@ -62,6 +74,11 @@ export interface AuthRouterOptions {
   loginRateLimit?: { windowMs: number; max: number }
   registrationRateLimit?: { windowMs: number; max: number }
   passwordResetRateLimit?: { windowMs: number; max: number }
+  emailVerificationRateLimit?: { windowMs: number; max: number }
+  passwordChangeRateLimit?: { windowMs: number; max: number }
+  /** Injectable transactional email service. Tests use a no-op or capture double. */
+  email?: EmailService
+  emailVerificationExpiryHours?: number
   /**
    * Optional central registration switch. It is supplied by the platform
    * settings service in production and omitted in credential-free unit tests,
@@ -98,6 +115,9 @@ export function createAuthRouter(
   const authenticateSubject = createAuthenticateSubjectTeacher(repository)
   const notifier = options.notifier ?? silentNotifier
   const sessionTtlMinutes = options.sessionTtlMinutes ?? env.AUTH_SESSION_TTL_MINUTES
+  const email = options.email ?? new NoopEmailService()
+  const verificationExpiryHours =
+    options.emailVerificationExpiryHours ?? env.EMAIL_VERIFICATION_EXPIRY_HOURS
 
   const loginLimiter = createRateLimiter({
     windowMs: options.loginRateLimit?.windowMs ?? 15 * 60 * 1000,
@@ -122,6 +142,20 @@ export function createAuthRouter(
     max: options.registrationRateLimit?.max ?? 20,
     scope: 'registration',
     keyGenerator: (req) => getClientIp(req) ?? 'unknown',
+  })
+
+  const verificationLimiter = createRateLimiter({
+    windowMs: options.emailVerificationRateLimit?.windowMs ?? 15 * 60 * 1000,
+    max: options.emailVerificationRateLimit?.max ?? 5,
+    scope: 'email verification',
+    keyGenerator: (req) => req.auth?.user.id ?? getClientIp(req) ?? 'unknown',
+  })
+
+  const changePasswordLimiter = createRateLimiter({
+    windowMs: options.passwordChangeRateLimit?.windowMs ?? 15 * 60 * 1000,
+    max: options.passwordChangeRateLimit?.max ?? 10,
+    scope: 'password change',
+    keyGenerator: (req) => req.auth?.user.id ?? getClientIp(req) ?? 'unknown',
   })
 
   const trustedOrigin = requireTrustedOrigin(options.trustedOrigins)
@@ -161,6 +195,65 @@ export function createAuthRouter(
    * administrator account, raises a platform notification. School-account
    * failures are audited but do not flood the platform inbox.
    */
+  /**
+   * Issues a fresh single-use verification token and emails the link. The
+   * repository revokes every outstanding token first, so an older link stops
+   * working the moment a resend succeeds. Email and token failures never fail
+   * school registration: the administrator can request another email.
+   */
+  async function issueVerificationEmail(input: {
+    user: { id: string; email: string; firstName: string }
+    schoolName: string
+    ipAddress?: string
+    userAgent?: string
+    resend: boolean
+  }): Promise<void> {
+    try {
+      const token = generateOpaqueToken()
+      const expiresAt = new Date(
+        Date.now() + verificationExpiryHours * 60 * 60 * 1000,
+      )
+      const record = await repository.createEmailVerificationToken({
+        userId: input.user.id,
+        tokenHash: hashToken(token),
+        expiresAt,
+        ipAddress: input.ipAddress,
+      })
+
+      await recordAuditSafely({
+        actorUserId: input.user.id,
+        action: input.resend
+          ? 'EMAIL_VERIFICATION_RESENT'
+          : 'EMAIL_VERIFICATION_SENT',
+        entityType: 'User',
+        entityId: input.user.id,
+        metadata: { expiresAt: expiresAt.toISOString() },
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+      })
+
+      await email.send({
+        template: input.resend
+          ? 'admin-verification-resend'
+          : 'admin-welcome',
+        to: input.user.email,
+        dedupeKey: `verify-email:${record.id}`,
+        data: {
+          firstName: input.user.firstName,
+          schoolName: input.schoolName,
+          verificationUrl: verificationUrl(token),
+          expiresAt: formatEmailDateTime(expiresAt),
+          expiryHours: verificationExpiryHours,
+        },
+      })
+    } catch {
+      // Never surface a token, SMTP error or provider detail to the caller.
+      console.error(
+        '[gradely-api] could not issue an email verification message',
+      )
+    }
+  }
+
   async function registerFailure(
     user: { id: string; email: string; isPlatformAdmin: boolean },
     now: Date,
@@ -260,6 +353,16 @@ export function createAuthRouter(
       }
 
       await issueSession(result.user.id, req, res)
+
+      // New administrators receive a verification link. The account exists and
+      // is signed in, but school administration stays locked until verification.
+      await issueVerificationEmail({
+        user: result.user,
+        schoolName: result.school.name,
+        ipAddress: getClientIp(req),
+        userAgent: req.get('user-agent'),
+        resend: false,
+      })
 
       await notifier.notify({
         type: 'SCHOOL_REGISTERED',
@@ -415,6 +518,24 @@ export function createAuthRouter(
 
       await repository.recordSuccessfulLogin(user.id, now)
       await issueSession(user.id, req, res)
+
+      // A teacher who has not replaced their temporary password receives one
+      // reminder per account. The forced-change middleware still enforces the
+      // restriction even if this message never arrives.
+      if (user.mustChangePassword === true) {
+        await email.send({
+          template: 'teacher-first-login',
+          to: user.email,
+          dedupeKey: `teacher-first-login:${user.id}`,
+          data: {
+            firstName: user.firstName,
+            schoolName: context?.memberships[0]?.schoolName ?? 'your school',
+            loginEmail: user.email,
+            changePasswordUrl: changePasswordUrl(),
+          },
+        })
+      }
+
       loginLimiter.reset(loginRateLimitKey(req))
 
       await recordAuditSafely({
@@ -464,6 +585,140 @@ export function createAuthRouter(
       next(error)
     }
   })
+
+  router.post(
+    '/email-verification/confirm',
+    trustedOrigin,
+    verificationLimiter.middleware,
+    async (req, res, next) => {
+      try {
+        const input = parseBody(emailVerificationConfirmSchema, req.body)
+        const consumed = await repository.consumeEmailVerificationToken({
+          tokenHash: hashToken(input.token),
+          now: new Date(),
+        })
+
+        if (!consumed) {
+          throw new HttpError(
+            400,
+            'This verification link is invalid, has expired, or has already been used',
+          )
+        }
+
+        const context = await repository.findUserWithMemberships(consumed.userId)
+        const schoolName =
+          context?.memberships[0]?.schoolName ?? 'your school'
+
+        if (context) {
+          await email.send({
+            template: 'admin-verified',
+            to: context.user.email,
+            dedupeKey: `admin-verified:${context.user.id}`,
+            data: {
+              firstName: context.user.firstName,
+              schoolName,
+              dashboardUrl: dashboardUrl(),
+            },
+          })
+        }
+
+        res.status(200).json({
+          data: {
+            message: 'Your email address is verified.',
+            user: context ? toPublicUser(context.user) : null,
+          },
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  router.post(
+    '/email-verification/resend',
+    trustedOrigin,
+    authenticate,
+    verificationLimiter.middleware,
+    async (req, res, next) => {
+      try {
+        const auth = requireAuth(req)
+
+        if (
+          auth.user.emailVerificationRequired !== true ||
+          auth.user.emailVerifiedAt != null
+        ) {
+          res.status(200).json({
+            data: { message: 'This email address is already verified.' },
+          })
+          return
+        }
+
+        await issueVerificationEmail({
+          user: auth.user,
+          schoolName: auth.memberships[0]?.schoolName ?? 'your school',
+          ipAddress: getClientIp(req),
+          userAgent: req.get('user-agent'),
+          resend: true,
+        })
+
+        res.status(202).json({
+          data: {
+            message:
+              'A new verification email has been sent. The previous link is no longer valid.',
+          },
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  router.post(
+    '/change-password',
+    trustedOrigin,
+    authenticate,
+    changePasswordLimiter.middleware,
+    async (req, res, next) => {
+      try {
+        const auth = requireAuth(req)
+        const input = parseBody(changePasswordSchema, req.body)
+        const matches = await verifyPassword(
+          input.currentPassword,
+          auth.user.passwordHash,
+        )
+
+        if (!matches) {
+          throw new HttpError(401, 'Your current password is incorrect', [
+            { field: 'currentPassword', message: 'Check your current password' },
+          ])
+        }
+
+        const passwordHash = await hashPassword(input.newPassword)
+        const changed = await repository.changePassword({
+          userId: auth.user.id,
+          passwordHash,
+          now: new Date(),
+          currentSessionId: auth.sessionId,
+          forceChangeCleared: auth.user.mustChangePassword === true,
+        })
+
+        if (!changed) {
+          throw new HttpError(401, 'Your session is no longer valid')
+        }
+
+        const context = await repository.findUserWithMemberships(auth.user.id)
+
+        res.status(200).json({
+          data: {
+            message: 'Your password has been updated.',
+            user: context ? toPublicUser(context.user) : null,
+          },
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
 
   router.post(
     '/password-reset/request',

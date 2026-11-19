@@ -104,6 +104,17 @@ describe.skipIf(!runIntegration)('PostgreSQL integration', () => {
     trackUser(response.body?.data?.user?.id)
     trackSchool(response.body?.data?.school?.id)
 
+    const userId = response.body?.data?.user?.id
+    if (typeof userId === 'string') {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          emailVerifiedAt: new Date(),
+          emailVerificationRequired: false,
+        },
+      })
+    }
+
     return { response, agent, suffix }
   }
 
