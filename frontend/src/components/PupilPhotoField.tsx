@@ -1,3 +1,4 @@
+
 import {
   Camera,
   ImagePlus,
@@ -55,6 +56,13 @@ export default function PupilPhotoField({
   const [cameraOpen, setCameraOpen] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [cameraReady, setCameraReady] = useState(false)
+
+  // NEW: Track the selected camera.
+  // Front camera is selected by default.
+  const [cameraFacingMode, setCameraFacingMode] = useState<
+    'user' | 'environment'
+  >('user')
+
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
 
@@ -77,6 +85,10 @@ export default function PupilPhotoField({
       setCameraError(null)
       setCameraReady(false)
 
+      // Stop any previous camera stream before switching.
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+
       if (!navigator.mediaDevices?.getUserMedia) {
         setCameraError('This browser does not expose a camera to web pages.')
         return
@@ -86,7 +98,8 @@ export default function PupilPhotoField({
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: {
-            facingMode: 'user',
+            // NEW: Use the selected front or back camera.
+            facingMode: { ideal: cameraFacingMode },
             width: { ideal: 1280 },
             height: { ideal: 960 },
           },
@@ -115,10 +128,11 @@ export default function PupilPhotoField({
 
     return () => {
       cancelled = true
+
       streamRef.current?.getTracks().forEach((track) => track.stop())
       streamRef.current = null
     }
-  }, [cameraOpen])
+  }, [cameraOpen, cameraFacingMode])
 
   function resetRaw() {
     if (raw) {
@@ -256,11 +270,13 @@ export default function PupilPhotoField({
                   className="aspect-[4/3] w-full object-cover"
                 />
               </div>
+
               {cameraError ? (
                 <p role="alert" className="text-xs font-medium text-red-700">
                   {cameraError}
                 </p>
               ) : null}
+
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
@@ -271,6 +287,23 @@ export default function PupilPhotoField({
                   <Camera aria-hidden="true" className="size-4" />
                   Capture photo
                 </Button>
+
+                {/* NEW: Switch between front and back cameras. */}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={!cameraReady}
+                  onClick={() =>
+                    setCameraFacingMode((current) =>
+                      current === 'user' ? 'environment' : 'user',
+                    )
+                  }
+                >
+                  <RotateCcw aria-hidden="true" className="size-4" />
+                  Switch to {cameraFacingMode === 'user' ? 'Back' : 'Front'} Camera
+                </Button>
+
                 <Button
                   type="button"
                   size="sm"
@@ -300,6 +333,7 @@ export default function PupilPhotoField({
                     ))}
                   </select>
                 </label>
+
                 <label className="text-xs font-semibold text-gradely-text">
                   Zoom {zoom.toFixed(1)}×
                   <input
@@ -313,6 +347,7 @@ export default function PupilPhotoField({
                   />
                 </label>
               </div>
+
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
@@ -328,6 +363,7 @@ export default function PupilPhotoField({
                   ) : null}
                   Use photo
                 </Button>
+
                 <Button
                   type="button"
                   size="sm"
@@ -349,6 +385,7 @@ export default function PupilPhotoField({
                   <ImagePlus aria-hidden="true" className="size-4" />
                   {pending || hasSavedPhoto ? 'Replace photo' : 'Choose photo'}
                 </label>
+
                 <input
                   id="pupilPhotoFile"
                   type="file"
@@ -360,6 +397,7 @@ export default function PupilPhotoField({
                     event.target.value = ''
                   }}
                 />
+
                 <Button
                   type="button"
                   size="sm"
@@ -367,12 +405,14 @@ export default function PupilPhotoField({
                   disabled={disabled}
                   onClick={() => {
                     setError(null)
+                    setCameraFacingMode('user')
                     setCameraOpen(true)
                   }}
                 >
                   <Camera aria-hidden="true" className="size-4" />
                   Take photo
                 </Button>
+
                 {pending ? (
                   <Button
                     type="button"
@@ -396,6 +436,7 @@ export default function PupilPhotoField({
                   </Button>
                 ) : null}
               </div>
+
               <p className="text-xs text-gradely-muted">
                 {pending
                   ? 'Ready to save. The photograph will be stored privately with this pupil record.'
