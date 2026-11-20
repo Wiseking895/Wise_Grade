@@ -6,6 +6,7 @@ import {
   RotateCcw,
   Trash2,
   UserRound,
+  X,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { apiAssetUrl } from '../lib/api'
@@ -49,6 +50,7 @@ export default function PupilPhotoField({
     previewUrl: string
     originalName: string | null
   } | null>(null)
+
   const [focus, setFocus] = useState<CropFocus>('center')
   const [zoom, setZoom] = useState(1)
   const [error, setError] = useState<string | null>(null)
@@ -57,8 +59,7 @@ export default function PupilPhotoField({
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [cameraReady, setCameraReady] = useState(false)
 
-  // NEW: Track the selected camera.
-  // Front camera is selected by default.
+  // Front camera is the default.
   const [cameraFacingMode, setCameraFacingMode] = useState<
     'user' | 'environment'
   >('user')
@@ -74,6 +75,7 @@ export default function PupilPhotoField({
     }
   }, [raw])
 
+  // Camera initialization and switching.
   useEffect(() => {
     if (!cameraOpen) {
       return
@@ -85,7 +87,7 @@ export default function PupilPhotoField({
       setCameraError(null)
       setCameraReady(false)
 
-      // Stop any previous camera stream before switching.
+      // Stop the previous camera before starting another.
       streamRef.current?.getTracks().forEach((track) => track.stop())
       streamRef.current = null
 
@@ -98,7 +100,6 @@ export default function PupilPhotoField({
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: {
-            // NEW: Use the selected front or back camera.
             facingMode: { ideal: cameraFacingMode },
             width: { ideal: 1280 },
             height: { ideal: 960 },
@@ -138,6 +139,7 @@ export default function PupilPhotoField({
     if (raw) {
       URL.revokeObjectURL(raw.previewUrl)
     }
+
     setRaw(null)
     setFocus('center')
     setZoom(1)
@@ -155,6 +157,7 @@ export default function PupilPhotoField({
     }
 
     resetRaw()
+
     setRaw({
       blob: file,
       previewUrl: URL.createObjectURL(file),
@@ -167,13 +170,16 @@ export default function PupilPhotoField({
 
     try {
       const blob = await captureVideoFrame(videoRef.current)
+
       resetRaw()
+
       setRaw({
         blob,
         previewUrl: URL.createObjectURL(blob),
         originalName: 'camera-photo.jpg',
       })
-      setCameraOpen(false)
+
+      // Keep the popup open to show the captured photograph.
     } catch (cause) {
       setCameraError(
         cause instanceof Error ? cause.message : 'Could not capture a photo.',
@@ -193,8 +199,12 @@ export default function PupilPhotoField({
         zoom,
         originalName: raw.originalName,
       })
+
       onChange(prepared)
       resetRaw()
+
+      // Close popup after successfully preparing the photo.
+      setCameraOpen(false)
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -206,11 +216,21 @@ export default function PupilPhotoField({
     }
   }
 
+  function closeCamera() {
+    setCameraOpen(false)
+    setCameraError(null)
+  }
+
   const hasSavedPhoto = Boolean(currentUrl)
   const savedPhotoUrl = currentUrl ? apiAssetUrl(currentUrl) : null
   const previewUrl = raw?.previewUrl ?? pending?.previewUrl ?? savedPhotoUrl
+
   const objectPosition =
-    focus === 'top' ? '50% 0%' : focus === 'bottom' ? '50% 100%' : '50% 50%'
+    focus === 'top'
+      ? '50% 0%'
+      : focus === 'bottom'
+        ? '50% 100%'
+        : '50% 50%'
 
   return (
     <section className="rounded-xl border border-slate-200 p-4">
@@ -219,11 +239,13 @@ export default function PupilPhotoField({
           <h3 className="text-sm font-bold text-gradely-text">
             Profile photograph
           </h3>
+
           <p className="mt-1 text-xs text-gradely-muted">
             Printed at the top-right of the terminal report. PNG, JPEG or WebP;
             the image is cropped to a portrait and compressed in your browser.
           </p>
         </div>
+
         <span className="rounded-full bg-gradely-light px-2.5 py-1 text-[11px] font-semibold text-gradely-muted">
           Private
         </span>
@@ -236,7 +258,9 @@ export default function PupilPhotoField({
               <img
                 src={previewUrl}
                 alt={`Photograph of ${pupilName || 'pupil'}`}
-                crossOrigin={previewUrl === savedPhotoUrl ? 'use-credentials' : undefined}
+                crossOrigin={
+                  previewUrl === savedPhotoUrl ? 'use-credentials' : undefined
+                }
                 className="h-full w-full object-cover"
                 style={
                   raw
@@ -260,65 +284,12 @@ export default function PupilPhotoField({
         </div>
 
         <div className="min-w-0 flex-1">
-          {cameraOpen ? (
-            <div className="space-y-3">
-              <div className="overflow-hidden rounded-xl border border-slate-300 bg-slate-900">
-                <video
-                  ref={videoRef}
-                  playsInline
-                  muted
-                  className="aspect-[4/3] w-full object-cover"
-                />
-              </div>
-
-              {cameraError ? (
-                <p role="alert" className="text-xs font-medium text-red-700">
-                  {cameraError}
-                </p>
-              ) : null}
-
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={!cameraReady}
-                  onClick={() => void captureFrame()}
-                >
-                  <Camera aria-hidden="true" className="size-4" />
-                  Capture photo
-                </Button>
-
-                {/* NEW: Switch between front and back cameras. */}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  disabled={!cameraReady}
-                  onClick={() =>
-                    setCameraFacingMode((current) =>
-                      current === 'user' ? 'environment' : 'user',
-                    )
-                  }
-                >
-                  <RotateCcw aria-hidden="true" className="size-4" />
-                  Switch to {cameraFacingMode === 'user' ? 'Back' : 'Front'} Camera
-                </Button>
-
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => setCameraOpen(false)}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : raw ? (
+          {raw ? (
             <div className="space-y-3">
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="text-xs font-semibold text-gradely-text">
                   Vertical framing
+
                   <select
                     value={focus}
                     onChange={(event) =>
@@ -336,6 +307,7 @@ export default function PupilPhotoField({
 
                 <label className="text-xs font-semibold text-gradely-text">
                   Zoom {zoom.toFixed(1)}×
+
                   <input
                     type="range"
                     min={1}
@@ -405,6 +377,7 @@ export default function PupilPhotoField({
                   disabled={disabled}
                   onClick={() => {
                     setError(null)
+                    setCameraError(null)
                     setCameraFacingMode('user')
                     setCameraOpen(true)
                   }}
@@ -454,6 +427,213 @@ export default function PupilPhotoField({
           ) : null}
         </div>
       </div>
+
+      {/* Camera modal popup */}
+      {cameraOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-slate-950/70 p-3 sm:p-6"
+          role="presentation"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pupil-camera-title"
+            className="my-auto w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            {/* Modal header */}
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4 sm:px-6">
+              <div className="flex items-center gap-2">
+                <div className="flex size-9 items-center justify-center rounded-xl bg-slate-100">
+                  <Camera className="size-5 text-slate-700" />
+                </div>
+
+                <div>
+                  <h2
+                    id="pupil-camera-title"
+                    className="text-base font-bold text-slate-900"
+                  >
+                    Capture Pupil Photograph
+                  </h2>
+
+                  <p className="text-xs text-slate-500">
+                    {raw
+                      ? 'Review your photograph before using it.'
+                      : 'Position the pupil clearly in the camera.'}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeCamera}
+                aria-label="Close camera"
+                className="flex size-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+              >
+                <X className="size-5" />
+              </button>
+            </div>
+
+            {/* Camera preview area */}
+            <div className="space-y-4 p-4 sm:p-6">
+              <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-950">
+                {/* Keep video mounted so Retake can reuse the camera stream. */}
+                <video
+                  ref={videoRef}
+                  playsInline
+                  muted
+                  className={
+                    raw
+                      ? 'hidden'
+                      : 'aspect-[4/3] max-h-[55vh] w-full object-cover'
+                  }
+                />
+
+                {raw ? (
+                  <div className="flex max-h-[55vh] min-h-[220px] items-center justify-center overflow-hidden bg-slate-950">
+                    <img
+                      src={raw.previewUrl}
+                      alt={`Captured photograph of ${pupilName || 'pupil'}`}
+                      className="max-h-[55vh] w-full object-contain"
+                      style={{
+                        objectPosition,
+                        transform: `scale(${zoom})`,
+                        transformOrigin: objectPosition,
+                      }}
+                    />
+                  </div>
+                ) : null}
+
+                {!raw && !cameraReady && !cameraError ? (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="text-center text-white">
+                      <Loader2 className="mx-auto size-8 animate-spin" />
+                      <p className="mt-2 text-sm">
+                        Starting camera...
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              {cameraError ? (
+                <p
+                  role="alert"
+                  className="rounded-lg bg-red-50 p-3 text-sm font-medium text-red-700"
+                >
+                  {cameraError}
+                </p>
+              ) : null}
+
+              {raw ? (
+                <>
+                  {/* Photo adjustment controls */}
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="text-sm font-semibold text-slate-700">
+                      Vertical framing
+
+                      <select
+                        value={focus}
+                        onChange={(event) =>
+                          setFocus(event.target.value as CropFocus)
+                        }
+                        className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium"
+                      >
+                        {FOCUS_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="text-sm font-semibold text-slate-700">
+                      Zoom {zoom.toFixed(1)}×
+
+                      <input
+                        type="range"
+                        min={1}
+                        max={2}
+                        step={0.1}
+                        value={zoom}
+                        onChange={(event) =>
+                          setZoom(Number(event.target.value))
+                        }
+                        className="mt-3 w-full accent-gradely-blue"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={resetRaw}
+                    >
+                      <RotateCcw className="size-4" />
+                      Retake
+                    </Button>
+
+                    <Button
+                      type="button"
+                      size="sm"
+                      loading={preparing}
+                      onClick={() => void applyCapturedPhoto()}
+                    >
+                      {preparing ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : null}
+                      Use photo
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-wrap justify-center gap-2 border-t border-slate-200 pt-4">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!cameraReady}
+                    onClick={() => void captureFrame()}
+                  >
+                    <Camera className="size-4" />
+                    Capture photo
+                  </Button>
+
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={!cameraReady}
+                    onClick={() =>
+                      setCameraFacingMode((current) =>
+                        current === 'user' ? 'environment' : 'user',
+                      )
+                    }
+                  >
+                    <RotateCcw className="size-4" />
+                    Switch to{' '}
+                    {cameraFacingMode === 'user' ? 'Back' : 'Front'} Camera
+                  </Button>
+
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={closeCamera}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              )}
+
+              <p className="text-center text-xs text-slate-500">
+                Your photograph will be prepared and saved with the pupil
+                record using the existing Gradely process.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }
