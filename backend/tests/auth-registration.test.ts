@@ -116,7 +116,12 @@ describe('POST /api/auth/register-school', () => {
     const duplicate = await request(app)
       .post('/api/auth/register-school')
       .set('Origin', TEST_ORIGIN)
-      .send(registrationBody({ schoolName: 'Second School' }))
+      .send(
+        registrationBody({
+          schoolName: 'Second School',
+          email: '  ADA@Example.COM  ',
+        }),
+      )
 
     expect(duplicate.status).toBe(409)
     expect(duplicate.body.error.message).toBe(

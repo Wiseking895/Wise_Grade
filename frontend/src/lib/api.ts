@@ -71,18 +71,31 @@ export interface ApiFieldError {
 export class ApiError extends Error {
   readonly status: number
   readonly details: ApiFieldError[]
+  /**
+   * Stable backend reason such as `session_expired`, `csrf_origin_missing`,
+   * `password_invalid` or `email_in_use`. Prose is safe to show, but the code
+   * lets a screen distinguish causes that share an HTTP status.
+   */
+  readonly code: string | null
 
-  constructor(status: number, message: string, details: ApiFieldError[] = []) {
+  constructor(
+    status: number,
+    message: string,
+    details: ApiFieldError[] = [],
+    code: string | null = null,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.details = details
+    this.code = code
   }
 }
 
 interface ApiErrorBody {
   error?: {
     message?: string
+    code?: string
     details?: ApiFieldError[]
   }
 }
@@ -139,6 +152,7 @@ export async function apiRequest<T>(
       response.status,
       payload?.error?.message ?? `Request failed (${response.status})`,
       payload?.error?.details ?? [],
+      payload?.error?.code ?? null,
     )
   }
 
@@ -277,6 +291,7 @@ export async function downloadFile(
       response.status,
       payload?.error?.message ?? `Request failed (${response.status})`,
       payload?.error?.details ?? [],
+      payload?.error?.code ?? null,
     )
   }
 

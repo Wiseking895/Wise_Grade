@@ -345,6 +345,12 @@ export interface IssuedSubjectTeacherInvitation
   code: string
 }
 
+/**
+ * `sent` means the SMTP relay accepted the message. It does not prove the
+ * recipient inbox received it, because no provider delivery webhook is
+ * implemented. `queued` means it is waiting in the outbox, and `not_sent` means
+ * dispatch failed or was never attempted.
+ */
 export type OnboardingEmailStatus = 'sent' | 'queued' | 'not_sent'
 
 export interface RegisterClassWithTeacherInput {
@@ -366,6 +372,33 @@ export interface ClassRegistrationResult {
   assignment: ClassTeacherAssignment
   /** Actual dispatch outcome of the generated-password onboarding email. */
   onboardingEmail?: OnboardingEmailStatus
+  /**
+   * False when a teacher who already belonged to this school was reassigned and
+   * no new account or password was generated.
+   */
+  accountCreated?: boolean
+}
+
+export interface UpdateTeacherInput {
+  firstName?: string
+  lastName?: string
+  email?: string
+  phone?: string | null
+  /** Reassign a class teacher to another existing class in this school. */
+  classId?: string
+}
+
+export interface UpdateTeacherResult {
+  teacher: Teacher
+  /** True when the normalized email address actually changed. */
+  emailChanged: boolean
+  /** Dispatch outcome of the new-address verification message. */
+  emailVerification: OnboardingEmailStatus
+}
+
+export interface RemoveTeacherResult {
+  teacher: Teacher
+  message: string
 }
 
 export type RegisterTeacherSubjectInput = ClassSubjectInput

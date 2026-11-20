@@ -41,13 +41,22 @@ export function requireTrustedOrigin(allowedOrigins: string[]): RequestHandler {
         new HttpError(
           403,
           'Origin header is required for cookie-authenticated requests',
+          undefined,
+          'csrf_origin_missing',
         ),
       )
       return
     }
 
     if (!allowedOrigins.includes(origin)) {
-      next(new HttpError(403, `Origin is not allowed: ${origin}`))
+      next(
+        new HttpError(
+          403,
+          `Origin is not allowed: ${origin}`,
+          undefined,
+          'csrf_origin_not_allowed',
+        ),
+      )
       return
     }
 

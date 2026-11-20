@@ -6,6 +6,7 @@ import { useAuth } from '../auth/use-auth'
 import AuthLayout from '../components/AuthLayout'
 import FormField from '../components/FormField'
 import { ApiError } from '../lib/api'
+import { apiErrorMessage } from '../lib/api-error-message'
 import {
   hasErrors,
   validateLogin,
@@ -100,7 +101,12 @@ export default function LoginPage() {
       navigate(landingFor(session.user, from), { replace: true })
     } catch (error) {
       if (error instanceof ApiError) {
-        setFormError(error.message)
+        setFormError(
+          apiErrorMessage(
+            error,
+            'Sign-in failed. Check your details and try again.',
+          ),
+        )
 
         if (error.details.length > 0) {
           setErrors(

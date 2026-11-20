@@ -30,6 +30,8 @@ import type {
   PupilRecord,
   RegisterClassWithTeacherInput,
   RegisterTeacherInput,
+  RegisterTeacherResult,
+  RemoveTeacherMembershipInput,
   SchoolProfile,
   SchoolRepository,
   SchoolSignatureDetailsInput,
@@ -47,6 +49,7 @@ import type {
   UpdatePupilPhotoInput,
   UpdateSchoolSignatureInput,
   UpdateSubjectInput,
+  UpdateTeacherInput,
 } from '../../src/schools/repository.js'
 import type { FakeAuthRepository } from './fake-auth-repository.js'
 
@@ -1153,15 +1156,39 @@ export class FakeSchoolRepository implements SchoolRepository {
 
     const email = input.teacher.email.trim().toLowerCase()
     let user = await this.auth.findUserByEmail(email)
+    let accountCreated = false
 
     if (user?.isPlatformAdmin) {
       throw new HttpError(
         409,
         'A platform administrator cannot be registered as a class teacher',
+        undefined,
+        'platform_admin_email',
       )
     }
 
-    if (!user) {
+    if (user) {
+      // An existing account may be reused only inside the same school. An
+      // account owned by another school is never attached to this tenant and is
+      // never sent a temporary password.
+      const existingMembership = this.auth
+        .listMembershipsForSchool(schoolId)
+        .find((item) => item.userId === user?.id)
+
+      if (!existingMembership) {
+        throw new HttpError(
+          409,
+          'An account with this email address already exists. Use a different email address, or ask the other school administrator to follow the authorized membership process.',
+          [
+            {
+              field: 'teacher.email',
+              message: 'This email is already associated with another account',
+            },
+          ],
+          'email_in_use',
+        )
+      }
+    } else {
       user = await this.auth.createUserWithPasswordHash({
         email,
         passwordHash: input.teacher.passwordHash,
@@ -1169,6 +1196,7 @@ export class FakeSchoolRepository implements SchoolRepository {
         lastName: clean(input.teacher.lastName),
         phone: input.teacher.phone ?? null,
       })
+      accountCreated = true
       // Mirror the Prisma repository: the administrator chose this temporary
       // password, so the teacher must replace it at first sign-in. Suites that
       // are not about first-login rotation opt out (see FakeAuthRepository).
@@ -1186,11 +1214,18 @@ export class FakeSchoolRepository implements SchoolRepository {
         throw new HttpError(
           409,
           'This person already has a different role in this school',
+          undefined,
+          'role_conflict',
         )
       }
 
       if (membership.status !== 'ACTIVE') {
-        throw new HttpError(409, 'This class teacher membership is suspended')
+        throw new HttpError(
+          409,
+          'This class teacher membership is suspended',
+          undefined,
+          'teacher_inactive',
+        )
       }
     } else {
       const membershipId = await this.auth.addMembership(
@@ -1266,6 +1301,7 @@ export class FakeSchoolRepository implements SchoolRepository {
       class: { ...cls },
       teacher: this.teacherRecord(schoolId, membership.id),
       assignment: { ...assignment },
+      accountCreated,
     }
   }
 
@@ -2605,10 +2641,19 @@ export class FakeSchoolRepository implements SchoolRepository {
     schoolId: string,
     input: RegisterTeacherInput,
     audit: AuditContext,
-  ): Promise<TeacherRecord> {
+  ): Promise<RegisterTeacherResult> {
     this.requireProfile(schoolId)
     const email = input.email.trim().toLowerCase()
     const user = await this.auth.findUserByEmail(email)
+
+    if (user?.isPlatformAdmin) {
+      throw new HttpError(
+        409,
+        'A platform administrator cannot be registered as a teacher',
+        undefined,
+        'platform_admin_email',
+      )
+    }
 
     const alreadyMember = this.auth
       .listMembershipsForSchool(schoolId)
@@ -2618,6 +2663,22 @@ export class FakeSchoolRepository implements SchoolRepository {
       throw new HttpError(
         409,
         'This person is already a member of this school; manage their assignment instead',
+        undefined,
+        'already_school_member',
+      )
+    }
+
+    if (user) {
+      throw new HttpError(
+        409,
+        'An account with this email address already exists. Use a different email address, or ask the other school administrator to follow the authorized membership process.',
+        [
+          {
+            field: 'email',
+            message: 'This email is already associated with another account',
+          },
+        ],
+        'email_in_use',
       )
     }
 
@@ -2643,22 +2704,36 @@ export class FakeSchoolRepository implements SchoolRepository {
       }
     }
 
-    let teacher = user
+    // A pre-existing account was rejected above, so this path always creates a
+    // new account and owns the generated temporary password.
+    const phoneOwner = input.phone
+      ? [...this.auth.users.values()].find(
+          (candidate) => candidate.phone === input.phone,
+        )
+      : undefined
 
-    if (!teacher) {
-      teacher = await this.auth.createUserWithPasswordHash({
-        email,
-        passwordHash: input.passwordHash,
-        firstName: clean(input.firstName),
-        lastName: clean(input.lastName),
-        // Mirror the Prisma repository: a registered teacher's optional phone
-        // number is persisted on the new user account.
-        phone: input.phone ?? null,
-      })
+    if (phoneOwner) {
+      throw new HttpError(
+        409,
+        'This phone number is already registered to another account',
+        [{ field: 'phone', message: 'This phone number is already in use' }],
+        'phone_in_use',
+      )
+    }
 
-      if (input.role === 'CLASS_TEACHER' && this.auth.requireTeacherPasswordChange) {
-        this.auth.requirePasswordChangeFor(teacher.id)
-      }
+    const teacher = await this.auth.createUserWithPasswordHash({
+      email,
+      passwordHash: input.passwordHash,
+      firstName: clean(input.firstName),
+      lastName: clean(input.lastName),
+      // Mirror the Prisma repository: a registered teacher's optional phone
+      // number is persisted on the new user account.
+      phone: input.phone ?? null,
+    })
+    const accountCreated = true
+
+    if (input.role === 'CLASS_TEACHER' && this.auth.requireTeacherPasswordChange) {
+      this.auth.requirePasswordChangeFor(teacher.id)
     }
 
     const membershipId = await this.auth.addMembership(
@@ -2744,7 +2819,10 @@ export class FakeSchoolRepository implements SchoolRepository {
       )
     }
 
-    return this.teacherRecord(schoolId, membershipId)
+    return {
+      teacher: this.teacherRecord(schoolId, membershipId),
+      accountCreated,
+    }
   }
 
   async resetTeacherTemporaryPassword(
@@ -2784,6 +2862,382 @@ export class FakeSchoolRepository implements SchoolRepository {
     )
 
     return this.teacherRecord(schoolId, membershipId)
+  }
+
+  async updateTeacher(
+    schoolId: string,
+    membershipId: string,
+    input: UpdateTeacherInput,
+    audit: AuditContext,
+  ): Promise<TeacherRecord> {
+    const membership = this.auth.getMembershipById(membershipId)
+
+    if (!membership || membership.schoolId !== schoolId) {
+      throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+    }
+
+    if (membership.user.isPlatformAdmin) {
+      throw new HttpError(
+        403,
+        'Platform administrator accounts cannot be managed as school teachers',
+        undefined,
+        'platform_admin_target',
+      )
+    }
+
+    if (
+      membership.role !== 'CLASS_TEACHER' &&
+      membership.role !== 'SUBJECT_TEACHER'
+    ) {
+      throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+    }
+
+    if (membership.status !== 'ACTIVE') {
+      throw new HttpError(
+        409,
+        'Only an active teacher membership can be edited. Restore access first.',
+        undefined,
+        'teacher_inactive',
+      )
+    }
+
+    if (input.email !== undefined) {
+      const nextEmail = input.email.trim().toLowerCase()
+      const owner = await this.auth.findUserByEmail(nextEmail)
+
+      if (owner && owner.id !== membership.user.id) {
+        throw new HttpError(
+          409,
+          'An account with this email address already exists',
+          [
+            {
+              field: 'email',
+              message: 'This email is already associated with another account',
+            },
+          ],
+          'email_in_use',
+        )
+      }
+    }
+
+    if (input.phone) {
+      const owner = await this.auth.findUserByPhone(input.phone)
+
+      if (owner && owner.id !== membership.user.id) {
+        throw new HttpError(
+          409,
+          'This phone number is already registered to another account',
+          [{ field: 'phone', message: 'This phone number is already in use' }],
+          'phone_in_use',
+        )
+      }
+    }
+
+    if (input.classId !== undefined) {
+      if (membership.role !== 'CLASS_TEACHER') {
+        throw new HttpError(
+          409,
+          'Only a class teacher can be assigned to a class',
+          undefined,
+          'role_mismatch',
+        )
+      }
+
+      const cls = this.requireClass(schoolId, input.classId)
+
+      if (cls.isArchived) {
+        throw new HttpError(
+          409,
+          'Archived classes cannot receive a class teacher',
+          undefined,
+          'class_archived',
+        )
+      }
+
+      const active = [...this.classTeacherAssignments.values()].find(
+        (item) =>
+          item.schoolId === schoolId &&
+          item.classId === cls.id &&
+          item.endedAt === null,
+      )
+
+      if (active && active.membershipId !== membershipId) {
+        throw new HttpError(
+          409,
+          'This class already has an active class teacher. Revoke or reassign the existing assignment first.',
+          undefined,
+          'class_teacher_conflict',
+        )
+      }
+
+      for (const assignment of this.classTeacherAssignments.values()) {
+        if (
+          assignment.schoolId === schoolId &&
+          assignment.membershipId === membershipId &&
+          assignment.endedAt === null &&
+          assignment.classId !== cls.id
+        ) {
+          assignment.endedAt = new Date()
+          this.record(
+            schoolId,
+            audit,
+            'CLASS_TEACHER_REASSIGNED',
+            'ClassTeacherAssignment',
+            assignment.id,
+            {
+              membershipId,
+              fromClassId: assignment.classId,
+              toClassId: cls.id,
+            },
+          )
+        }
+      }
+
+      const existing = [...this.classTeacherAssignments.values()].find(
+        (item) => item.classId === cls.id && item.membershipId === membershipId,
+      )
+      const assignment: ClassTeacherAssignmentRecord = existing ?? {
+        id: randomUUID(),
+        schoolId,
+        classId: cls.id,
+        className: cls.name,
+        membershipId,
+        userId: membership.user.id,
+        firstName: membership.user.firstName,
+        lastName: membership.user.lastName,
+        email: membership.user.email,
+        createdAt: new Date(),
+        endedAt: null,
+      }
+
+      assignment.endedAt = null
+      this.classTeacherAssignments.set(assignment.id, assignment)
+      this.record(
+        schoolId,
+        audit,
+        'CLASS_TEACHER_ASSIGNED',
+        'ClassTeacherAssignment',
+        assignment.id,
+        { classId: cls.id, membershipId, className: cls.name },
+      )
+    }
+
+    const previousEmail = membership.user.email
+    let user
+
+    try {
+      user = this.auth.updateTeacherProfile({
+        userId: membership.user.id,
+        firstName: input.firstName === undefined ? undefined : clean(input.firstName),
+        lastName: input.lastName === undefined ? undefined : clean(input.lastName),
+        email: input.email,
+        phone: input.phone,
+      })
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        (error as { code?: unknown }).code === 'P2002'
+      ) {
+        throw new HttpError(
+          409,
+          'This email address or phone number is already in use',
+          undefined,
+          'identity_in_use',
+        )
+      }
+
+      throw error
+    }
+
+    const emailChanged = user.email !== previousEmail
+
+    if (emailChanged) {
+      await this.auth.revokeAllSessionsForUser(user.id)
+    }
+
+    for (const assignment of this.subjectTeacherAssignments.values()) {
+      if (
+        assignment.schoolId === schoolId &&
+        assignment.membershipId === membershipId &&
+        assignment.endedAt === null
+      ) {
+        assignment.firstName = user.firstName
+        assignment.lastName = user.lastName
+        assignment.email = user.email
+        assignment.phone = user.phone
+      }
+    }
+
+    this.record(
+      schoolId,
+      audit,
+      'TEACHER_UPDATED',
+      'SchoolMembership',
+      membershipId,
+      {
+        userId: membership.user.id,
+        emailChanged,
+        classId: input.classId ?? null,
+      },
+    )
+
+    return this.teacherRecord(schoolId, membershipId)
+  }
+
+  async removeTeacherMembership(
+    schoolId: string,
+    membershipId: string,
+    input: RemoveTeacherMembershipInput,
+    audit: AuditContext,
+  ): Promise<TeacherRecord> {
+    const membership = this.auth.getMembershipById(membershipId)
+
+    if (!membership || membership.schoolId !== schoolId) {
+      throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+    }
+
+    if (membership.user.isPlatformAdmin) {
+      throw new HttpError(
+        403,
+        'Platform administrator accounts cannot be removed as school teachers',
+        undefined,
+        'platform_admin_target',
+      )
+    }
+
+    if (
+      membership.role !== 'CLASS_TEACHER' &&
+      membership.role !== 'SUBJECT_TEACHER'
+    ) {
+      throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+    }
+
+    if (membership.status !== 'ACTIVE') {
+      throw new HttpError(
+        409,
+        'This teacher membership is already inactive',
+        undefined,
+        'teacher_inactive',
+      )
+    }
+
+    if (
+      input.confirmEmail.trim().toLowerCase() !==
+      membership.user.email.toLowerCase()
+    ) {
+      throw new HttpError(
+        400,
+        'The confirmation email does not match this teacher account',
+        [
+          {
+            field: 'confirmEmail',
+            message: 'Type the teacher’s current email address exactly',
+          },
+        ],
+        'email_confirmation_mismatch',
+      )
+    }
+
+    const now = new Date()
+    let endedClassAssignments = 0
+    let endedSubjectAssignments = 0
+
+    for (const assignment of this.classTeacherAssignments.values()) {
+      if (
+        assignment.schoolId === schoolId &&
+        assignment.membershipId === membershipId &&
+        assignment.endedAt === null
+      ) {
+        assignment.endedAt = now
+        endedClassAssignments += 1
+        this.record(
+          schoolId,
+          audit,
+          'CLASS_TEACHER_ASSIGNMENT_ENDED',
+          'ClassTeacherAssignment',
+          assignment.id,
+          {
+            membershipId,
+            classId: assignment.classId,
+            reason: 'membership_removed',
+          },
+        )
+      }
+    }
+
+    for (const assignment of this.subjectTeacherAssignments.values()) {
+      if (
+        assignment.schoolId === schoolId &&
+        assignment.membershipId === membershipId &&
+        assignment.endedAt === null
+      ) {
+        assignment.endedAt = now
+        endedSubjectAssignments += 1
+        this.record(
+          schoolId,
+          audit,
+          'SUBJECT_TEACHER_ASSIGNMENT_ENDED',
+          'SubjectTeacherAssignment',
+          assignment.id,
+          {
+            membershipId,
+            classId: assignment.classId,
+            subjectId: assignment.subjectId,
+            reason: 'membership_removed',
+          },
+        )
+      }
+    }
+
+    this.auth.setMembershipStatus(membershipId, 'SUSPENDED')
+
+    this.record(
+      schoolId,
+      audit,
+      'TEACHER_MEMBERSHIP_REMOVED',
+      'SchoolMembership',
+      membershipId,
+      {
+        userId: membership.user.id,
+        email: membership.user.email,
+        reason: input.reason?.trim() || null,
+        endedClassAssignments,
+        endedSubjectAssignments,
+      },
+    )
+
+    const removed = this.listTeachersSync(schoolId).find(
+      (teacher) => teacher.membershipId === membershipId,
+    )
+
+    if (!removed) {
+      throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+    }
+
+    return removed
+  }
+
+  private listTeachersSync(schoolId: string): TeacherRecord[] {
+    return this.auth
+      .listMembershipsForSchool(schoolId)
+      .filter(
+        (membership) =>
+          membership.role === 'CLASS_TEACHER' ||
+          membership.role === 'SUBJECT_TEACHER',
+      )
+      .map((membership) => ({
+        membershipId: membership.id,
+        userId: membership.user.id,
+        schoolId,
+        firstName: membership.user.firstName,
+        lastName: membership.user.lastName,
+        email: membership.user.email,
+        phone: membership.user.phone ?? null,
+        role: membership.role,
+        status: membership.status,
+        joinedAt: membership.joinedAt,
+      }))
   }
 
   async listTeacherAssignments(

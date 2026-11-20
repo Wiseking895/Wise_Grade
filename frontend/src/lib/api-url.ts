@@ -2,12 +2,33 @@
  * Resolves the API base URL used by every browser request.
  *
  * The value comes from `VITE_API_URL`, which Vite inlines into the bundle at
- * build time. A production bundle must therefore be built with the deployed API
- * origin; silently falling back to localhost would ship a client that can never
- * reach the API, so that case is reported as a configuration error instead.
+ * build time.
+ *
+ * Three deployment shapes are supported:
+ *
+ * - A direct backend origin (for example `https://api.example.com`). Requests
+ *   are cross-site, so the API must allow the web origin through CORS and its
+ *   session cookie must survive third-party-cookie blocking. This is why iOS
+ *   Safari can reject the session even though login appeared to succeed.
+ * - Same-origin proxy mode (`same-origin`, or no value in a production build).
+ *   Requests go to `/api/...` on the page's own origin and the host rewrites
+ *   them to the backend. The session cookie is then first-party and is not
+ *   subject to Safari's cross-site cookie blocking.
+ * - Localhost during development when no value is configured.
+ *
+ * Silently falling back to localhost in production would ship a client that can
+ * never reach the API, so that case is impossible: production defaults to
+ * same-origin, which either works through the configured host rewrite or fails
+ * with a normal network error.
  */
 
 export const LOCAL_API_URL = 'http://localhost:4000'
+
+/** Explicit opt-in to the same-origin `/api` proxy mode. */
+export const SAME_ORIGIN_SENTINEL = 'same-origin'
+
+/** Empty base URL means "use this page's origin", i.e. relative `/api` calls. */
+export const SAME_ORIGIN_BASE_URL = ''
 
 const LOOPBACK_HOSTNAMES = new Set([
   'localhost',
@@ -23,18 +44,15 @@ export interface ApiBaseUrlResolution {
   error: string | null
 }
 
-const MISSING_PRODUCTION_URL =
-  'VITE_API_URL is not configured for this production build. Set it to the ' +
-  'deployed backend origin (for example https://api.example.com) in the ' +
-  'frontend hosting environment and redeploy.'
-
 /**
  * Validates and normalizes a configured API base URL.
  *
  * Development keeps a localhost default so `npm run dev` works with no
- * configuration. Production requires an explicit HTTPS origin that is not a
- * loopback address; the returned error is surfaced to the user instead of
- * quietly calling the developer machine.
+ * configuration. A production build with no value uses same-origin proxy mode:
+ * every call is a relative `/api/...` request that the host must rewrite to the
+ * backend. An explicit production origin must be HTTPS and not a loopback
+ * address; those values are still validated as before so a direct-origin
+ * deployment cannot silently point at a developer machine.
  */
 export function resolveApiBaseUrl(
   rawValue: string | undefined,
@@ -42,9 +60,13 @@ export function resolveApiBaseUrl(
 ): ApiBaseUrlResolution {
   const raw = rawValue?.trim() ?? ''
 
+  if (raw === SAME_ORIGIN_SENTINEL) {
+    return { baseUrl: SAME_ORIGIN_BASE_URL, error: null }
+  }
+
   if (!raw) {
     return isProduction
-      ? { baseUrl: '', error: MISSING_PRODUCTION_URL }
+      ? { baseUrl: SAME_ORIGIN_BASE_URL, error: null }
       : { baseUrl: LOCAL_API_URL, error: null }
   }
 
@@ -110,18 +132,20 @@ export interface DeployableApiUrlCheck {
 /**
  * Build-time check used by `vite.config.ts`.
  *
- * A missing or malformed URL stops the build, because the deployed site would
- * have no API to call. A loopback or plain-HTTP URL only warns: it is valid for
- * a local production-mode build, while the runtime guard refuses to call it
- * from a deployed page.
+ * A missing value or the explicit `same-origin` sentinel is valid: the deployed
+ * host is expected to rewrite `/api` to the backend, and the build cannot verify
+ * that rewrite from here. A malformed direct origin stops the build, because the
+ * deployed site would have no API to call. A loopback or plain-HTTP URL only
+ * warns: it is valid for a local production-mode build, while the runtime guard
+ * refuses to call it from a deployed page.
  */
 export function checkDeployableApiUrl(
   rawValue: string | undefined,
 ): DeployableApiUrlCheck {
   const raw = rawValue?.trim() ?? ''
 
-  if (!raw) {
-    return { error: MISSING_PRODUCTION_URL, warning: null }
+  if (!raw || raw === SAME_ORIGIN_SENTINEL) {
+    return { error: null, warning: null }
   }
 
   // Structural validation only; production reachability is checked below.

@@ -92,10 +92,11 @@ describe('subject access-code feedback', () => {
 })
 
 describe('class teacher onboarding messaging', () => {
-  it('tells the administrator that credentials were emailed', async () => {
+  it('reports mail-server acceptance without claiming inbox delivery', async () => {
     const page = await source('../src/pages/dashboard/TeachersPage.tsx')
 
-    assert.match(page, /temporary password were emailed to/)
+    assert.match(page, /accepted by the mail server/)
+    assert.match(page, /Delivery to the inbox cannot be confirmed here/)
     assert.match(page, /must choose a personal password/)
     assert.match(page, /Gradely generates a strong temporary password/)
     assert.match(page, /never shown in this dashboard/)

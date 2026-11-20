@@ -30,6 +30,9 @@ import type {
   SubjectTeacherInvitation,
   Teacher,
   TeacherAssignments,
+  UpdateTeacherInput,
+  UpdateTeacherResult,
+  RemoveTeacherResult,
 } from './types'
 
 function schoolPath(schoolId: string, suffix = ''): string {
@@ -322,6 +325,38 @@ export function registerTeacher(
     method: 'POST',
     body: input,
   })
+}
+
+/**
+ * Edits a teacher's profile without ever setting or returning a password. When
+ * the email changes, the backend applies it, requires re-verification and
+ * reports whether the verification message was sent, queued or not sent.
+ */
+export function updateTeacher(
+  schoolId: string,
+  membershipId: string,
+  input: UpdateTeacherInput,
+) {
+  return apiRequest<UpdateTeacherResult>(
+    schoolPath(schoolId, `/teachers/${encodeURIComponent(membershipId)}`),
+    { method: 'PATCH', body: input },
+  )
+}
+
+/**
+ * Soft-removes a teacher from this school. The account and academic history are
+ * preserved; the response states that plainly. The confirmation email must
+ * match the membership's current address.
+ */
+export function removeTeacherMembership(
+  schoolId: string,
+  membershipId: string,
+  input: { confirmEmail: string; reason?: string | null },
+) {
+  return apiRequest<RemoveTeacherResult>(
+    schoolPath(schoolId, `/teachers/${encodeURIComponent(membershipId)}`),
+    { method: 'DELETE', body: input },
+  )
 }
 
 /**

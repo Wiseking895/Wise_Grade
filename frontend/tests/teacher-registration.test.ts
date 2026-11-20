@@ -98,3 +98,38 @@ describe('class-teacher registration request', () => {
     assert.match(api, /body: input/)
   })
 })
+
+describe('administrator teacher edit and removal', () => {
+  it('exposes edit and soft-removal actions without password fields', async () => {
+    const page = await source('../src/pages/dashboard/TeachersPage.tsx')
+
+    assert.match(page, /updateTeacher\(/)
+    assert.match(page, /removeTeacherMembership\(/)
+    assert.match(page, /Remove access/)
+    assert.match(page, /academic records and any access to/)
+    assert.match(page, /administrators cannot set or view passwords/)
+    assert.doesNotMatch(page, /type="password"/)
+    assert.doesNotMatch(page, /temporaryPassword/)
+  })
+
+  it('uses the authenticated PATCH and DELETE endpoints', async () => {
+    const api = await source('../src/schools/api.ts')
+
+    assert.match(
+      api,
+      /schoolPath\(schoolId, `\/teachers\/\$\{encodeURIComponent\(membershipId\)\}`\)/,
+    )
+    assert.match(api, /method: 'PATCH'/)
+    assert.match(api, /method: 'DELETE'/)
+    assert.match(api, /confirmEmail: string/)
+  })
+
+  it('carries the dispatch outcome into the success message', async () => {
+    const page = await source('../src/pages/dashboard/TeachersPage.tsx')
+
+    assert.match(page, /result\.emailChanged/)
+    assert.match(page, /result\.emailVerification/)
+    assert.match(page, /emailVerificationMessage\(/)
+    assert.match(page, /verification email to .* could not be sent/)
+  })
+})

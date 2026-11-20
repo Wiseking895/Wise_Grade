@@ -56,7 +56,12 @@ export function createAuthenticate(repository: AuthRepository) {
       const extracted = extractSessionToken(req)
 
       if (!extracted) {
-        throw new HttpError(401, 'Authentication required')
+        throw new HttpError(
+          401,
+          'Authentication required',
+          undefined,
+          'auth_missing',
+        )
       }
 
       const session = await repository.findSessionByTokenHash(
@@ -70,13 +75,23 @@ export function createAuthenticate(repository: AuthRepository) {
         session.expiresAt <= now ||
         !session.user.isActive
       ) {
-        throw new HttpError(401, 'Session is invalid or has expired')
+        throw new HttpError(
+          401,
+          'Session is invalid or has expired',
+          undefined,
+          'session_expired',
+        )
       }
 
       const context = await repository.findUserWithMemberships(session.user.id)
 
       if (!context || !context.user.isActive) {
-        throw new HttpError(401, 'Session is invalid or has expired')
+        throw new HttpError(
+          401,
+          'Session is invalid or has expired',
+          undefined,
+          'session_expired',
+        )
       }
 
       // Activity tracking must never block or fail a valid request.
@@ -98,6 +113,8 @@ export function createAuthenticate(repository: AuthRepository) {
           throw new HttpError(
             403,
             'Set a new password before continuing. Your account still uses its temporary password.',
+            undefined,
+            'password_change_required',
           )
         }
       }

@@ -102,6 +102,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const session = await loginRequest({ email, password })
+
+    // The login response only proves the server created a session. Confirm the
+    // browser actually stored and returned the cookie before showing an
+    // authenticated UI. Safari can silently drop a third-party cookie, which
+    // otherwise surfaces later as a misleading "Authentication required" on the
+    // first state-changing request.
+    try {
+      await fetchSession()
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        throw new ApiError(
+          401,
+          'Sign-in succeeded, but this browser did not keep the session cookie.',
+          [],
+          'session_cookie_blocked',
+        )
+      }
+
+      throw error
+    }
+
     // An account session takes precedence over a restricted subject session,
     // so drop any stale subject marker.
     clearSubjectSessionHint()

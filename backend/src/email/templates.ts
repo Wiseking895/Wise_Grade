@@ -11,6 +11,7 @@ export type EmailTemplateName =
   | 'admin-welcome'
   | 'admin-verified'
   | 'admin-verification-resend'
+  | 'email-change-verification'
   | 'teacher-credentials'
   | 'teacher-first-login'
   | 'subject-assignment'
@@ -34,6 +35,14 @@ export interface EmailDataMap {
   'admin-verification-resend': {
     firstName: string
     schoolName: string
+    verificationUrl: string
+    expiresAt: string
+    expiryHours: number
+  }
+  'email-change-verification': {
+    firstName: string
+    schoolName: string
+    previousEmail: string
     verificationUrl: string
     expiresAt: string
     expiryHours: number
@@ -277,6 +286,31 @@ If you did not create ${payload.schoolName}, you can ignore this email.`,
         subject: isResend
           ? `Your new ${PRODUCT_NAME} verification link`
           : `Welcome to ${PRODUCT_NAME} - verify your email`,
+        ...result,
+      }
+    }
+
+    case 'email-change-verification': {
+      const payload = data as EmailDataMap['email-change-verification']
+      const result = layout({
+        preheader: `Confirm the new email address for your ${PRODUCT_NAME} account.`,
+        heading: 'Confirm your new email address',
+        intro: `An administrator updated the email address for your ${PRODUCT_NAME} account at ${payload.schoolName} from ${payload.previousEmail} to this address.`,
+        bodyHtml: `${actionButton('Confirm this email address', payload.verificationUrl)}
+          <p style="margin:0 0 18px 0;font-size:14px;line-height:1.65;color:${BRAND.text};">This link is valid for ${payload.expiryHours} hours and expires on ${escapeHtml(payload.expiresAt)}. It can only be used once.</p>
+          ${warningBox('If you did not expect this change, contact your school administrator immediately. Do not forward this link to anyone.')}
+          <p style="margin:0 0 8px 0;font-size:12px;line-height:1.6;color:${BRAND.muted};">If the button does not work, copy this address into your browser:</p>
+          <p style="margin:0 0 16px 0;font-size:12px;line-height:1.6;word-break:break-all;color:${BRAND.blue};">${escapeHtml(payload.verificationUrl)}</p>`,
+        bodyText: `An administrator updated the email address for your ${PRODUCT_NAME} account at ${payload.schoolName} from ${payload.previousEmail} to this address.
+
+Confirm this email address: ${payload.verificationUrl}
+
+This link is valid for ${payload.expiryHours} hours and expires on ${payload.expiresAt}. It can only be used once.
+
+If you did not expect this change, contact your school administrator immediately.`,
+      })
+      return {
+        subject: `Confirm your new ${PRODUCT_NAME} email address`,
         ...result,
       }
     }

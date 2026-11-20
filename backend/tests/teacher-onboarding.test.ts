@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import request from 'supertest'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createApp } from '../src/app.js'
@@ -145,6 +146,7 @@ describe('class teacher onboarding', () => {
     const blocked = await teacher.get(`/api/schools/${schoolId}/classes`)
     expect(blocked.status).toBe(403)
     expect(blocked.body.error.message).toMatch(/set a new password/i)
+    expect(blocked.body.error.code).toBe('password_change_required')
 
     const wrongCurrent = await teacher
       .post('/api/auth/change-password')
@@ -154,6 +156,7 @@ describe('class teacher onboarding', () => {
         newPassword: NEW_TEACHER_PASSWORD,
       })
     expect(wrongCurrent.status).toBe(401)
+    expect(wrongCurrent.body.error.code).toBe('password_invalid')
 
     const changed = await teacher
       .post('/api/auth/change-password')
@@ -183,29 +186,43 @@ describe('class teacher onboarding', () => {
     expect(newLogin.body.data.user.mustChangePassword).toBe(false)
   })
 
-  it('does not email temporary credentials to an existing account', async () => {
+  it('rejects an existing account from another school without generating credentials', async () => {
     const existing = await auth.createUser({
       email: 'existing@onboarding.test',
       password: TEST_PASSWORD,
       firstName: 'Existing',
       lastName: 'Teacher',
     })
+    // The account belongs to a different school, so this tenant must not attach
+    // it, generate a second password or report a successful onboarding email.
+    const otherSchoolId = randomUUID()
+    auth.seedSchool({
+      id: otherSchoolId,
+      name: 'Another Academy',
+      slug: 'another-academy',
+    })
+    await auth.addMembership(existing.id, otherSchoolId, 'CLASS_TEACHER')
 
     const response = await registerClass({
       className: 'Basic 3',
-      email: 'existing@onboarding.test',
+      email: 'EXISTING@onboarding.test',
     })
 
-    expect(response.status).toBe(201)
-    expect(response.body.data.teacher.userId).toBe(existing.id)
+    expect(response.status).toBe(409)
+    expect(response.body.error.code).toBe('email_in_use')
     expect(email.all('teacher-credentials')).toHaveLength(0)
-
-    // The account kept its real password and is not forced to rotate it,
-    // because no administrator-supplied password was applied.
+    expect(JSON.stringify(response.body)).not.toMatch(/temporaryPassword|passwordHash/)
     expect(auth.getUserSnapshot('existing@onboarding.test')?.mustChangePassword).toBe(
       false,
     )
+    expect(
+      auth
+        .listMembershipsForSchool(schoolId)
+        .some((membership) => membership.user.id === existing.id),
+    ).toBe(false)
 
+    // The existing account keeps its original password and is not forced to
+    // rotate it, because no administrator-supplied password was applied.
     const login = await request(app)
       .post('/api/auth/login')
       .set('Origin', TEST_ORIGIN)

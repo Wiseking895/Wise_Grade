@@ -29,6 +29,8 @@ import type {
   PupilRecord,
   RegisterClassWithTeacherInput,
   RegisterTeacherInput,
+  RegisterTeacherResult,
+  RemoveTeacherMembershipInput,
   SchoolProfile,
   SchoolRepository,
   SubjectRecord,
@@ -36,6 +38,7 @@ import type {
   SubjectTeacherDetailsInput,
   SubjectTeacherInvitationRecord,
   TeacherRecord,
+  UpdateTeacherInput,
 } from './repository.js'
 
 type Tx = Prisma.TransactionClient
@@ -2033,16 +2036,62 @@ export function createPrismaSchoolRepository(): SchoolRepository {
           }
 
           const email = input.teacher.email.trim().toLowerCase()
-          let user = await tx.user.findUnique({ where: { email } })
+          const userByEmail = await tx.user.findUnique({ where: { email } })
 
-          if (user?.isPlatformAdmin) {
+          if (userByEmail?.isPlatformAdmin) {
             throw new HttpError(
               409,
               'A platform administrator cannot be registered as a class teacher',
+              undefined,
+              'platform_admin_email',
             )
           }
 
-          if (!user) {
+          let user = userByEmail
+          let accountCreated = false
+
+          if (user) {
+            // An email belongs to exactly one account. It may be reused only
+            // inside the same school, where the administrator is explicitly
+            // reassigning a known member. Attaching an account from another
+            // school would silently grant cross-tenant access, so it is
+            // rejected instead of reusing or updating that account.
+            const existingMembership = await tx.schoolMembership.findUnique({
+              where: { schoolId_userId: { schoolId, userId: user.id } },
+            })
+
+            if (!existingMembership) {
+              throw new HttpError(
+                409,
+                'An account with this email address already exists. Use a different email address, or ask the other school administrator to follow the authorized membership process.',
+                [
+                  {
+                    field: 'teacher.email',
+                    message: 'This email is already associated with another account',
+                  },
+                ],
+                'email_in_use',
+              )
+            }
+
+            if (existingMembership.role !== 'CLASS_TEACHER') {
+              throw new HttpError(
+                409,
+                'This person already has a different role in this school',
+                undefined,
+                'role_conflict',
+              )
+            }
+
+            if (existingMembership.status !== 'ACTIVE') {
+              throw new HttpError(
+                409,
+                'This class teacher membership is suspended',
+                undefined,
+                'teacher_inactive',
+              )
+            }
+          } else {
             const phone = input.teacher.phone?.trim() || null
 
             if (phone) {
@@ -2055,23 +2104,44 @@ export function createPrismaSchoolRepository(): SchoolRepository {
                 throw new HttpError(
                   409,
                   'This phone number is already registered to another account',
+                  [
+                    {
+                      field: 'phone',
+                      message: 'This phone number is already in use',
+                    },
+                  ],
+                  'phone_in_use',
                 )
               }
             }
 
-            user = await tx.user.create({
-              data: {
-                email,
-                passwordHash: input.teacher.passwordHash,
-                firstName: normalizeName(input.teacher.firstName),
-                lastName: normalizeName(input.teacher.lastName),
-                phone,
-                isPlatformAdmin: false,
-                // The administrator never chooses this password. The server
-                // generates it and the teacher must replace it at first sign-in.
-                mustChangePassword: true,
-              },
-            })
+            try {
+              user = await tx.user.create({
+                data: {
+                  email,
+                  passwordHash: input.teacher.passwordHash,
+                  firstName: normalizeName(input.teacher.firstName),
+                  lastName: normalizeName(input.teacher.lastName),
+                  phone,
+                  isPlatformAdmin: false,
+                  // The administrator never chooses this password. The server
+                  // generates it and the teacher must replace it at first sign-in.
+                  mustChangePassword: true,
+                },
+              })
+              accountCreated = true
+            } catch (error) {
+              // The database unique index is the final guard for simultaneous
+              // registrations. Never reuse the other request's account.
+              conflictFromUnique(
+                error,
+                'An account with this email address already exists',
+              )
+            }
+          }
+
+          if (!user) {
+            throw new HttpError(500, 'Could not create the teacher account')
           }
 
           let membership = await tx.schoolMembership.findUnique({
@@ -2084,6 +2154,8 @@ export function createPrismaSchoolRepository(): SchoolRepository {
               throw new HttpError(
                 409,
                 'This person already has a different role in this school',
+                undefined,
+                'role_conflict',
               )
             }
 
@@ -2091,6 +2163,8 @@ export function createPrismaSchoolRepository(): SchoolRepository {
               throw new HttpError(
                 409,
                 'This class teacher membership is suspended',
+                undefined,
+                'teacher_inactive',
               )
             }
           } else {
@@ -2176,6 +2250,7 @@ export function createPrismaSchoolRepository(): SchoolRepository {
             class: mapClass(cls),
             teacher: mapTeacher(membership),
             assignment: mapClassTeacherAssignment(assignment),
+            accountCreated,
           }
         })
       } catch (error) {
@@ -3315,16 +3390,62 @@ export function createPrismaSchoolRepository(): SchoolRepository {
       return memberships.map(mapTeacher)
     },
 
-    async registerTeacher(schoolId, input: RegisterTeacherInput, audit) {
+    async registerTeacher(
+      schoolId,
+      input: RegisterTeacherInput,
+      audit,
+    ): Promise<RegisterTeacherResult> {
       const prisma = getPrismaClient()
 
-      return prisma.$transaction(async (tx) => {
-        await findSchoolOrThrow(tx, schoolId)
+      try {
+        return await prisma.$transaction(async (tx) => {
+          await findSchoolOrThrow(tx, schoolId)
 
-        const email = input.email.trim().toLowerCase()
-        let user = await tx.user.findUnique({ where: { email } })
+          const email = input.email.trim().toLowerCase()
+          const existingUser = await tx.user.findUnique({ where: { email } })
 
-        if (!user) {
+          if (existingUser?.isPlatformAdmin) {
+            throw new HttpError(
+              409,
+              'A platform administrator cannot be registered as a teacher',
+              undefined,
+              'platform_admin_email',
+            )
+          }
+
+          // An email identifies exactly one global account. A teacher account
+          // that already belongs to another school must never be silently
+          // attached to this tenant, and it must never receive a second
+          // generated password or a successful onboarding response.
+          if (existingUser) {
+            const existingMembership = await tx.schoolMembership.findUnique({
+              where: {
+                schoolId_userId: { schoolId, userId: existingUser.id },
+              },
+            })
+
+            if (existingMembership) {
+              throw new HttpError(
+                409,
+                'This person is already a member of this school; manage their assignment instead',
+                undefined,
+                'already_school_member',
+              )
+            }
+
+            throw new HttpError(
+              409,
+              'An account with this email address already exists. Use a different email address, or ask the other school administrator to follow the authorized membership process.',
+              [
+                {
+                  field: 'email',
+                  message: 'This email is already associated with another account',
+                },
+              ],
+              'email_in_use',
+            )
+          }
+
           const phone = input.phone?.trim() || null
 
           if (phone) {
@@ -3337,70 +3458,85 @@ export function createPrismaSchoolRepository(): SchoolRepository {
               throw new HttpError(
                 409,
                 'This phone number is already registered to another account',
+                [{ field: 'phone', message: 'This phone number is already in use' }],
+                'phone_in_use',
               )
             }
           }
 
-          user = await tx.user.create({
+          let accountCreated = false
+          let user!: Awaited<ReturnType<typeof tx.user.create>>
+
+          try {
+            user = await tx.user.create({
+              data: {
+                email,
+                passwordHash: input.passwordHash,
+                firstName: normalizeName(input.firstName),
+                lastName: normalizeName(input.lastName),
+                phone,
+                // Teacher creation can never grant platform administration.
+                isPlatformAdmin: false,
+                // A server-generated password is temporary for class teachers
+                // and must be replaced before the account is usable.
+                mustChangePassword: input.role === 'CLASS_TEACHER',
+              },
+            })
+            accountCreated = true
+          } catch (error) {
+            // The database unique index is the final guard for simultaneous
+            // registrations. Never reuse the other request's account.
+            conflictFromUnique(
+              error,
+              'An account with this email address already exists',
+            )
+          }
+
+          const membership = await tx.schoolMembership.create({
             data: {
-              email,
-              passwordHash: input.passwordHash,
-              firstName: normalizeName(input.firstName),
-              lastName: normalizeName(input.lastName),
-              phone,
-              // Teacher creation can never grant platform administration.
-              isPlatformAdmin: false,
-              // A server-generated password is temporary for class teachers
-              // and must be replaced before the account is usable.
-              mustChangePassword: input.role === 'CLASS_TEACHER',
+              schoolId,
+              userId: user.id,
+              role: input.role,
+              status: 'ACTIVE',
             },
+            include: { user: true },
           })
-        }
 
-        const existingMembership = await tx.schoolMembership.findUnique({
-          where: {
-            schoolId_userId: { schoolId, userId: user.id },
-          },
-        })
-
-        if (existingMembership) {
-          throw new HttpError(
-            409,
-            'This person is already a member of this school; manage their assignment instead',
-          )
-        }
-
-        const membership = await tx.schoolMembership.create({
-          data: {
+          await recordAudit(
+            tx,
             schoolId,
-            userId: user.id,
-            role: input.role,
-            status: 'ACTIVE',
-          },
-          include: { user: true },
-        })
-
-        await recordAudit(
-          tx,
-          schoolId,
-          audit,
-          'TEACHER_REGISTERED',
-          'SchoolMembership',
-          membership.id,
-          { email, role: input.role, userId: user.id },
-        )
-
-        if (input.role === 'CLASS_TEACHER') {
-          await assignRegisteredClassTeacher(tx, {
-            schoolId,
-            membershipId: membership.id,
-            input,
             audit,
-          })
-        }
+            'TEACHER_REGISTERED',
+            'SchoolMembership',
+            membership.id,
+            {
+              email,
+              role: input.role,
+              userId: user.id,
+              accountCreated,
+            },
+          )
 
-        return mapTeacher(membership)
-      })
+          if (input.role === 'CLASS_TEACHER') {
+            await assignRegisteredClassTeacher(tx, {
+              schoolId,
+              membershipId: membership.id,
+              input,
+              audit,
+            })
+          }
+
+          return {
+            teacher: mapTeacher(membership),
+            accountCreated,
+          }
+        })
+      } catch (error) {
+        return conflictFromUnique(
+          error,
+          'This teacher already exists. Refresh and try again.',
+        )
+      }
     },
 
     async resetTeacherTemporaryPassword(
@@ -3466,6 +3602,407 @@ export function createPrismaSchoolRepository(): SchoolRepository {
         )
 
         return mapTeacher(membership)
+      })
+    },
+
+    async updateTeacher(
+      schoolId,
+      membershipId: string,
+      input: UpdateTeacherInput,
+      audit,
+    ): Promise<TeacherRecord> {
+      const prisma = getPrismaClient()
+
+      try {
+        return await prisma.$transaction(async (tx) => {
+          const membership = await tx.schoolMembership.findFirst({
+            where: { id: membershipId, schoolId },
+            include: { user: true },
+          })
+
+          if (!membership) {
+            throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+          }
+
+          if (membership.user.isPlatformAdmin) {
+            throw new HttpError(
+              403,
+              'Platform administrator accounts cannot be managed as school teachers',
+              undefined,
+              'platform_admin_target',
+            )
+          }
+
+          if (
+            membership.role !== 'CLASS_TEACHER' &&
+            membership.role !== 'SUBJECT_TEACHER'
+          ) {
+            throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+          }
+
+          if (membership.status !== 'ACTIVE') {
+            throw new HttpError(
+              409,
+              'Only an active teacher membership can be edited. Restore access first.',
+              undefined,
+              'teacher_inactive',
+            )
+          }
+
+          const nextEmail =
+            input.email === undefined
+              ? membership.user.email
+              : input.email.trim().toLowerCase()
+          const emailChanged = nextEmail !== membership.user.email
+
+          if (emailChanged) {
+            const owner = await tx.user.findFirst({
+              where: {
+                email: nextEmail,
+                NOT: { id: membership.userId },
+              },
+              select: { id: true },
+            })
+
+            if (owner) {
+              throw new HttpError(
+                409,
+                'An account with this email address already exists',
+                [
+                  {
+                    field: 'email',
+                    message: 'This email is already associated with another account',
+                  },
+                ],
+                'email_in_use',
+              )
+            }
+          }
+
+          const nextPhone =
+            input.phone === undefined
+              ? membership.user.phone
+              : input.phone?.trim() || null
+
+          if (nextPhone && nextPhone !== membership.user.phone) {
+            const phoneOwner = await tx.user.findFirst({
+              where: {
+                phone: nextPhone,
+                NOT: { id: membership.userId },
+              },
+              select: { id: true },
+            })
+
+            if (phoneOwner) {
+              throw new HttpError(
+                409,
+                'This phone number is already registered to another account',
+                [{ field: 'phone', message: 'This phone number is already in use' }],
+                'phone_in_use',
+              )
+            }
+          }
+
+          if (input.classId !== undefined) {
+            if (membership.role !== 'CLASS_TEACHER') {
+              throw new HttpError(
+                409,
+                'Only a class teacher can be assigned to a class',
+                undefined,
+                'role_mismatch',
+              )
+            }
+
+            const cls = await tx.schoolClass.findFirst({
+              where: { id: input.classId, schoolId },
+            })
+
+            if (!cls) {
+              throw new HttpError(
+                400,
+                'The selected class does not belong to this school',
+                undefined,
+                'class_not_found',
+              )
+            }
+
+            if (cls.isArchived) {
+              throw new HttpError(
+                409,
+                'Archived classes cannot receive a class teacher',
+                undefined,
+                'class_archived',
+              )
+            }
+
+            const active = await tx.classTeacherAssignment.findFirst({
+              where: { schoolId, classId: cls.id, endedAt: null },
+            })
+
+            if (active && active.membershipId !== membershipId) {
+              throw new HttpError(
+                409,
+                'This class already has an active class teacher. Revoke or reassign the existing assignment first.',
+                undefined,
+                'class_teacher_conflict',
+              )
+            }
+
+            const previous = await tx.classTeacherAssignment.findMany({
+              where: {
+                schoolId,
+                membershipId,
+                endedAt: null,
+                NOT: { classId: cls.id },
+              },
+            })
+
+            for (const assignment of previous) {
+              await tx.classTeacherAssignment.update({
+                where: { id: assignment.id },
+                data: { endedAt: new Date() },
+              })
+
+              await recordAudit(
+                tx,
+                schoolId,
+                audit,
+                'CLASS_TEACHER_REASSIGNED',
+                'ClassTeacherAssignment',
+                assignment.id,
+                {
+                  membershipId,
+                  fromClassId: assignment.classId,
+                  toClassId: cls.id,
+                },
+              )
+            }
+
+            const assignment = await tx.classTeacherAssignment.upsert({
+              where: {
+                classId_membershipId: { classId: cls.id, membershipId },
+              },
+              create: { schoolId, classId: cls.id, membershipId },
+              update: { endedAt: null },
+            })
+
+            await recordAudit(
+              tx,
+              schoolId,
+              audit,
+              'CLASS_TEACHER_ASSIGNED',
+              'ClassTeacherAssignment',
+              assignment.id,
+              { classId: cls.id, membershipId, className: cls.name },
+            )
+          }
+
+          const user = await tx.user.update({
+            where: { id: membership.userId },
+            data: {
+              firstName:
+                input.firstName === undefined
+                  ? undefined
+                  : normalizeName(input.firstName),
+              lastName:
+                input.lastName === undefined
+                  ? undefined
+                  : normalizeName(input.lastName),
+              phone: input.phone === undefined ? undefined : nextPhone,
+              email: emailChanged ? nextEmail : undefined,
+              // A changed address is not trusted until the teacher confirms it.
+              emailVerifiedAt: emailChanged ? null : undefined,
+              emailVerificationRequired: emailChanged ? true : undefined,
+            },
+          })
+
+          if (emailChanged) {
+            // The old address may still be usable elsewhere. Ending every
+            // session forces the account to re-authenticate with the new
+            // identity and prevents a stale browser from continuing silently.
+            await tx.session.updateMany({
+              where: { userId: membership.userId, revokedAt: null },
+              data: { revokedAt: new Date() },
+            })
+          }
+
+          // Assignment rows carry an identity snapshot used by the class
+          // workspace and report exports. Keep them consistent with the
+          // authoritative User row.
+          await tx.subjectTeacherAssignment.updateMany({
+            where: { schoolId, membershipId, endedAt: null },
+            data: {
+              firstName: user.firstName,
+              lastName: user.lastName,
+              email: user.email,
+              phone: user.phone,
+            },
+          })
+
+          await recordAudit(
+            tx,
+            schoolId,
+            audit,
+            'TEACHER_UPDATED',
+            'SchoolMembership',
+            membership.id,
+            {
+              userId: membership.userId,
+              emailChanged,
+              classId: input.classId ?? null,
+            },
+          )
+
+          return mapTeacher({ ...membership, user })
+        })
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          throw new HttpError(
+            409,
+            'This email address or phone number is already in use',
+            undefined,
+            'identity_in_use',
+          )
+        }
+
+        throw error
+      }
+    },
+
+    async removeTeacherMembership(
+      schoolId,
+      membershipId: string,
+      input: RemoveTeacherMembershipInput,
+      audit,
+    ): Promise<TeacherRecord> {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const membership = await tx.schoolMembership.findFirst({
+          where: { id: membershipId, schoolId },
+          include: { user: true },
+        })
+
+        if (!membership) {
+          throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+        }
+
+        if (membership.user.isPlatformAdmin) {
+          throw new HttpError(
+            403,
+            'Platform administrator accounts cannot be removed as school teachers',
+            undefined,
+            'platform_admin_target',
+          )
+        }
+
+        if (
+          membership.role !== 'CLASS_TEACHER' &&
+          membership.role !== 'SUBJECT_TEACHER'
+        ) {
+          throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+        }
+
+        if (membership.status !== 'ACTIVE') {
+          throw new HttpError(
+            409,
+            'This teacher membership is already inactive',
+            undefined,
+            'teacher_inactive',
+          )
+        }
+
+        if (
+          input.confirmEmail.trim().toLowerCase() !==
+          membership.user.email.toLowerCase()
+        ) {
+          throw new HttpError(
+            400,
+            'The confirmation email does not match this teacher account',
+            [
+              {
+                field: 'confirmEmail',
+                message: 'Type the teacher’s current email address exactly',
+              },
+            ],
+            'email_confirmation_mismatch',
+          )
+        }
+
+        const now = new Date()
+        const classAssignments = await tx.classTeacherAssignment.findMany({
+          where: { schoolId, membershipId, endedAt: null },
+        })
+
+        for (const assignment of classAssignments) {
+          await tx.classTeacherAssignment.update({
+            where: { id: assignment.id },
+            data: { endedAt: now },
+          })
+
+          await recordAudit(
+            tx,
+            schoolId,
+            audit,
+            'CLASS_TEACHER_ASSIGNMENT_ENDED',
+            'ClassTeacherAssignment',
+            assignment.id,
+            { membershipId, classId: assignment.classId, reason: 'membership_removed' },
+          )
+        }
+
+        const subjectAssignments = await tx.subjectTeacherAssignment.findMany({
+          where: { schoolId, membershipId, endedAt: null },
+        })
+
+        for (const assignment of subjectAssignments) {
+          await tx.subjectTeacherAssignment.update({
+            where: { id: assignment.id },
+            data: { endedAt: now },
+          })
+
+          await recordAudit(
+            tx,
+            schoolId,
+            audit,
+            'SUBJECT_TEACHER_ASSIGNMENT_ENDED',
+            'SubjectTeacherAssignment',
+            assignment.id,
+            {
+              membershipId,
+              classId: assignment.classId,
+              subjectId: assignment.subjectId,
+              reason: 'membership_removed',
+            },
+          )
+        }
+
+        // Soft removal only. The User row, pupils, scores, reports and audit
+        // history stay intact, and any membership this person holds in another
+        // school is untouched.
+        const updated = await tx.schoolMembership.update({
+          where: { id: membershipId },
+          data: { status: 'SUSPENDED' },
+          include: { user: true },
+        })
+
+        await recordAudit(
+          tx,
+          schoolId,
+          audit,
+          'TEACHER_MEMBERSHIP_REMOVED',
+          'SchoolMembership',
+          membership.id,
+          {
+            userId: membership.userId,
+            email: membership.user.email,
+            reason: input.reason?.trim() || null,
+            endedClassAssignments: classAssignments.length,
+            endedSubjectAssignments: subjectAssignments.length,
+          },
+        )
+
+        return mapTeacher(updated)
       })
     },
 

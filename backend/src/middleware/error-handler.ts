@@ -123,6 +123,7 @@ export function errorHandler(
     res.status(400).json({
       error: {
         message: 'Invalid JSON payload',
+        code: 'invalid_json',
       },
     })
     return
@@ -132,6 +133,7 @@ export function errorHandler(
     res.status(400).json({
       error: {
         message: 'Invalid identifier',
+        code: 'invalid_identifier',
       },
     })
     return
@@ -167,6 +169,9 @@ export function errorHandler(
   res.status(statusCode).json({
     error: {
       message,
+      ...(isHttpError && error.code !== undefined
+        ? { code: error.code }
+        : {}),
       ...(isHttpError && error.details !== undefined
         ? { details: error.details }
         : {}),

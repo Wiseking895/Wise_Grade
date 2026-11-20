@@ -854,6 +854,93 @@ export class FakeAuthRepository implements AuthRepository {
   }
 
   /**
+   * Test helper: applies the same normalized-email and unique-phone rules as
+   * the Prisma repository. A changed email also clears verification.
+   */
+  updateTeacherProfile(input: {
+    userId: string
+    firstName?: string
+    lastName?: string
+    email?: string
+    phone?: string | null
+  }): UserRecord {
+    const user = this.users.get(input.userId)
+
+    if (!user) {
+      throw new Error('Unknown user')
+    }
+
+    const previousEmail = user.email
+    const nextEmail =
+      input.email === undefined ? user.email : input.email.trim().toLowerCase()
+    const nextPhone =
+      input.phone === undefined ? user.phone : input.phone?.trim() || null
+
+    if (nextEmail !== user.email) {
+      const owner = this.emailIndex.get(nextEmail)
+
+      if (owner && owner !== user.id) {
+        throw Object.assign(new Error('Unique constraint failed'), {
+          code: 'P2002',
+        })
+      }
+    }
+
+    if (nextPhone && nextPhone !== user.phone) {
+      const owner = this.phoneIndex.get(nextPhone)
+
+      if (owner && owner !== user.id) {
+        throw Object.assign(new Error('Unique constraint failed'), {
+          code: 'P2002',
+        })
+      }
+    }
+
+    if (this.emailIndex.get(user.email) === user.id) {
+      this.emailIndex.delete(user.email)
+    }
+
+    if (user.phone && this.phoneIndex.get(user.phone) === user.id) {
+      this.phoneIndex.delete(user.phone)
+    }
+
+    user.firstName = input.firstName ?? user.firstName
+    user.lastName = input.lastName ?? user.lastName
+    user.email = nextEmail
+    user.phone = nextPhone
+
+    if (nextEmail !== previousEmail) {
+      user.emailVerifiedAt = null
+      user.emailVerificationRequired = true
+    }
+
+    this.emailIndex.set(user.email, user.id)
+
+    if (user.phone) {
+      this.phoneIndex.set(user.phone, user.id)
+    }
+
+    return { ...user }
+  }
+
+  /** Test helper: mirrors the soft-removal membership update. */
+  setMembershipStatus(
+    membershipId: string,
+    status: MembershipStatus,
+  ): boolean {
+    const membership = [...this.memberships.values()].find(
+      (item) => item.id === membershipId,
+    )
+
+    if (!membership) {
+      return false
+    }
+
+    membership.status = status
+    return true
+  }
+
+  /**
    * Test helper: mirrors the platform suspension/reactivation write so tests
    * can exercise enforcement without a live platform repository.
    */
@@ -996,6 +1083,33 @@ export class FakeAuthRepository implements AuthRepository {
     if (user) {
       user.lockedUntil = lockedUntil
     }
+  }
+
+  /**
+   * Test helper: register an active school without an administrator so tenant
+   * isolation tests can attach an existing account to "another school".
+   */
+  seedSchool(input: {
+    id: string
+    name: string
+    slug: string
+    isActive?: boolean
+  }): void {
+    this.schools.set(input.id, {
+      id: input.id,
+      name: input.name,
+      slug: input.slug,
+      email: null,
+      phone: null,
+      address: null,
+      landmark: null,
+      timezone: 'UTC',
+      isActive: input.isActive ?? true,
+      logoObjectKey: null,
+      logoMimeType: null,
+      logoUpdatedAt: null,
+      createdAt: new Date(),
+    })
   }
 
   /** Test helper: mark a registered administrator's email verified. */

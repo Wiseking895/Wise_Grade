@@ -189,6 +189,7 @@ describe('GET /api/auth/me', () => {
 
     expect(response.status).toBe(401)
     expect(response.body.error.message).toBe('Authentication required')
+    expect(response.body.error.code).toBe('auth_missing')
   })
 
   it('returns the authenticated profile and memberships', async () => {
@@ -231,6 +232,7 @@ describe('GET /api/auth/me', () => {
     expect(response.body.error.message).toBe(
       'Session is invalid or has expired',
     )
+    expect(response.body.error.code).toBe('session_expired')
   })
 
   it('rejects a revoked session', async () => {

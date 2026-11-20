@@ -417,6 +417,32 @@ export const registerTeacherSchema = z
     path: ['subjects'],
   })
 
+export const updateTeacherSchema = z
+  .object({
+    firstName: personName.optional(),
+    lastName: personName.optional(),
+    email: teacherEmail.optional(),
+    phone: optionalGhanaMobile,
+    classId: uuid.optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.firstName !== undefined ||
+      value.lastName !== undefined ||
+      value.email !== undefined ||
+      value.phone !== undefined ||
+      value.classId !== undefined,
+    { message: 'Provide at least one field to update' },
+  )
+
+export const removeTeacherMembershipSchema = z
+  .object({
+    confirmEmail: teacherEmail,
+    reason: shortText(500).optional().nullable(),
+  })
+  .strict()
+
 export const membershipBodySchema = z
   .object({ membershipId: uuid })
   .strict()
@@ -458,6 +484,10 @@ export type MovePupilInput = z.infer<typeof movePupilSchema>
 export type CreateSubjectInput = z.infer<typeof createSubjectSchema>
 export type UpdateSubjectInput = z.infer<typeof updateSubjectSchema>
 export type RegisterTeacherInput = z.infer<typeof registerTeacherSchema>
+export type UpdateTeacherInput = z.infer<typeof updateTeacherSchema>
+export type RemoveTeacherMembershipInput = z.infer<
+  typeof removeTeacherMembershipSchema
+>
 export type RegisterClassWithTeacherInput = z.infer<
   typeof registerClassWithTeacherSchema
 >

@@ -45,6 +45,7 @@ describe('JSON parsing', () => {
     expect(response.body).toEqual({
       error: {
         message: 'Invalid JSON payload',
+        code: 'invalid_json',
       },
     })
   })

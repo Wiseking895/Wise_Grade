@@ -223,6 +223,14 @@ const sampleData: { [K in EmailTemplateName]: EmailDataMap[K] } = {
     expiresAt: '20 November 2026 at 10:00 UTC',
     expiryHours: 24,
   },
+  'email-change-verification': {
+    firstName: 'Ama',
+    schoolName: 'Green Valley Academy',
+    previousEmail: 'ama.old@example.com',
+    verificationUrl: `https://wisegrade.app/verify-email?token=${VERIFICATION_TOKEN}`,
+    expiresAt: '20 November 2026 at 10:00 UTC',
+    expiryHours: 24,
+  },
   'teacher-credentials': {
     firstName: 'Ama',
     schoolName: 'Green Valley Academy',

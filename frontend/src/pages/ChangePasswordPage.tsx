@@ -5,6 +5,7 @@ import { useAuth } from '../auth/use-auth'
 import AuthLayout from '../components/AuthLayout'
 import FormField from '../components/FormField'
 import { SessionLoadingScreen } from '../components/ProtectedRoute'
+import { apiErrorMessage } from '../lib/api-error-message'
 import { ApiError } from '../lib/api'
 
 const MIN_PASSWORD_LENGTH = 10
@@ -91,7 +92,12 @@ export default function ChangePasswordPage() {
       setSubmitted(true)
     } catch (cause) {
       if (cause instanceof ApiError) {
-        setFormError(cause.message)
+        setFormError(
+          apiErrorMessage(
+            cause,
+            'The password could not be changed. Please try again.',
+          ),
+        )
 
         if (cause.details.length > 0) {
           setErrors(

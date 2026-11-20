@@ -447,7 +447,12 @@ export function createAuthRouter(
           userAgent: req.get('user-agent'),
         })
 
-        throw new HttpError(401, 'Invalid email or password')
+        throw new HttpError(
+          401,
+          'Invalid email or password',
+          undefined,
+          'invalid_credentials',
+        )
       }
 
       // Optional MFA. When enabled, a missing or wrong code never issues a
@@ -708,9 +713,17 @@ export function createAuthRouter(
         )
 
         if (!matches) {
-          throw new HttpError(401, 'Your current password is incorrect', [
-            { field: 'currentPassword', message: 'Check your current password' },
-          ])
+          throw new HttpError(
+            401,
+            'Your current password is incorrect',
+            [
+              {
+                field: 'currentPassword',
+                message: 'Check your current password',
+              },
+            ],
+            'password_invalid',
+          )
         }
 
         const passwordHash = await hashPassword(input.newPassword)

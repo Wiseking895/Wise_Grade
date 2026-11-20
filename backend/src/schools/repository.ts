@@ -399,6 +399,33 @@ export interface ClassRegistrationResult {
   class: ClassRecord
   teacher: TeacherRecord
   assignment: ClassTeacherAssignmentRecord
+  /**
+   * False when an existing member of this same school was reassigned. The
+   * caller must not send temporary credentials in that case because no new
+   * password was stored.
+   */
+  accountCreated: boolean
+}
+
+export interface RegisterTeacherResult {
+  teacher: TeacherRecord
+  /** False when an existing member of this same school was reused. */
+  accountCreated: boolean
+}
+
+export interface UpdateTeacherInput {
+  firstName?: string
+  lastName?: string
+  email?: string
+  phone?: string | null
+  /** Reassign a class teacher to an existing class in the same school. */
+  classId?: string
+}
+
+export interface RemoveTeacherMembershipInput {
+  /** Must match the teacher's current email to prevent a wrong-account removal. */
+  confirmEmail: string
+  reason?: string | null
 }
 
 export interface RegisterTeacherInput {
@@ -663,8 +690,30 @@ export interface SchoolRepository {
     schoolId: string,
     input: RegisterTeacherInput,
     audit: AuditContext,
+  ): Promise<RegisterTeacherResult>
+
+  /**
+   * Updates a teacher's editable profile and, for a class teacher, their class
+   * assignment. Tenant-scoped and restricted to CLASS_TEACHER/SUBJECT_TEACHER
+   * memberships. Email changes are normalized and uniquely constrained.
+   */
+  updateTeacher(
+    schoolId: string,
+    membershipId: string,
+    input: UpdateTeacherInput,
+    audit: AuditContext,
   ): Promise<TeacherRecord>
 
+  /**
+   * Soft-removes a teacher membership by suspending it and ending active
+   * assignments. User accounts and academic/audit history are preserved.
+   */
+  removeTeacherMembership(
+    schoolId: string,
+    membershipId: string,
+    input: RemoveTeacherMembershipInput,
+    audit: AuditContext,
+  ): Promise<TeacherRecord>
   /**
    * Replaces a class teacher's temporary password and revokes their existing
    * sessions. Used by the secure resend-credentials flow; the caller generates

@@ -1,4 +1,4 @@
-import { Mail, Plus, UserPlus } from 'lucide-react'
+import { Mail, Pencil, Plus, Trash2, UserPlus } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import FormField from '../../components/FormField'
 import {
@@ -12,12 +12,17 @@ import {
   SelectField,
 } from '../../components/ui'
 import { useSchool } from '../../schools/use-school'
+import { apiErrorMessage } from '../../lib/api-error-message'
 import { ApiError } from '../../lib/api'
 import {
   listAcademicYears,
+  listClasses,
   listTeacherAssignments,
+  listTeachers,
   registerClassWithTeacher,
+  removeTeacherMembership,
   resendTeacherCredentials,
+  updateTeacher,
 } from '../../schools/api'
 import {
   fieldFeedback,
@@ -27,7 +32,10 @@ import type {
   AcademicYear,
   ClassTeacherAssignment,
   OnboardingEmailStatus,
+  SchoolClass,
+  Teacher,
   TeacherAssignments,
+  UpdateTeacherInput,
 } from '../../schools/types'
 
 interface RegisterFormState {
@@ -48,6 +56,22 @@ const EMPTY_REGISTER: RegisterFormState = {
   lastName: '',
   email: '',
   phone: '',
+}
+
+interface EditFormState {
+  firstName: string
+  lastName: string
+  email: string
+  phone: string
+  classId: string
+}
+
+const EMPTY_EDIT: EditFormState = {
+  firstName: '',
+  lastName: '',
+  email: '',
+  phone: '',
+  classId: '',
 }
 
 /**
@@ -91,7 +115,7 @@ function onboardingMessage(
   status: OnboardingEmailStatus | undefined,
 ): string {
   if (status === 'sent') {
-    return `${teacherName} is registered. Their login details and a generated temporary password were emailed to ${email}. They must choose a personal password before opening the class workspace.`
+    return `${teacherName} is registered. The onboarding email to ${email} was accepted by the mail server; it contains their login details and a generated temporary password. Delivery to the inbox cannot be confirmed here. They must choose a personal password before opening the class workspace.`
   }
 
   if (status === 'queued') {
@@ -99,6 +123,27 @@ function onboardingMessage(
   }
 
   return `${teacherName} is registered, but the onboarding email to ${email} could not be sent. Use Resend credentials to generate and email a fresh temporary password.`
+}
+
+/**
+ * Reports the real outcome of the email-change verification message. The
+ * address changes immediately, but it is not trusted until the teacher confirms
+ * the link, so "not sent" must never be presented as success.
+ */
+function emailVerificationMessage(
+  teacherName: string,
+  email: string,
+  status: OnboardingEmailStatus,
+): string {
+  if (status === 'sent') {
+    return `${teacherName}'s profile was updated. The verification email to ${email} was accepted by the mail server; the address stays unverified until the link is confirmed. Delivery to the inbox cannot be confirmed here.`
+  }
+
+  if (status === 'queued') {
+    return `${teacherName}'s profile was updated. The verification email to ${email} is queued for delivery. If it does not arrive, use Resend verification from the teacher account.`
+  }
+
+  return `${teacherName}'s profile was updated, but the verification email to ${email} could not be sent. The new address remains unverified. Use Resend verification before relying on it.`
 }
 
 /**
@@ -113,6 +158,8 @@ export default function TeachersPage() {
     subjectTeachers: [],
   })
   const [academicYears, setAcademicYears] = useState<AcademicYear[]>([])
+  const [teachers, setTeachers] = useState<Teacher[]>([])
+  const [classes, setClasses] = useState<SchoolClass[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
@@ -127,27 +174,47 @@ export default function TeachersPage() {
     string | null
   >(null)
 
+  const [editing, setEditing] = useState<Teacher | null>(null)
+  const [editForm, setEditForm] = useState<EditFormState>(EMPTY_EDIT)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [editDetails, setEditDetails] = useState<FieldFeedback[]>([])
+  const [editBusy, setEditBusy] = useState(false)
+
+  const [removing, setRemoving] = useState<Teacher | null>(null)
+  const [removeEmail, setRemoveEmail] = useState('')
+  const [removeReason, setRemoveReason] = useState('')
+  const [removeError, setRemoveError] = useState<string | null>(null)
+  const [removeBusy, setRemoveBusy] = useState(false)
+
   const load = useCallback(async () => {
     if (!schoolId) return
 
+    if (!isAdmin) {
+      setLoading(false)
+      return
+    }
+
     try {
-      const [assignmentResponse, yearResponse] = await Promise.all([
-        listTeacherAssignments(schoolId),
-        listAcademicYears(schoolId),
-      ])
+      const [assignmentResponse, yearResponse, teacherResponse, classResponse] =
+        await Promise.all([
+          listTeacherAssignments(schoolId),
+          listAcademicYears(schoolId),
+          listTeachers(schoolId),
+          listClasses(schoolId),
+        ])
       setError(null)
       setAssignments(assignmentResponse.assignments)
       setAcademicYears(yearResponse.academicYears)
+      setTeachers(teacherResponse.teachers)
+      setClasses(classResponse.classes)
     } catch (cause) {
       setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Could not load teacher assignments.',
+        apiErrorMessage(cause, 'Could not load teacher assignments.'),
       )
     } finally {
       setLoading(false)
     }
-  }, [schoolId])
+  }, [isAdmin, schoolId])
 
   useEffect(() => {
     // Data fetching is the intended external-system synchronisation here.
@@ -201,9 +268,10 @@ export default function TeachersPage() {
       await load()
     } catch (cause) {
       setRegisterError(
-        cause instanceof Error
-          ? cause.message
-          : 'Could not register the class and class teacher.',
+        apiErrorMessage(
+          cause,
+          'Could not register the class and class teacher.',
+        ),
       )
       // The API returns one entry per rejected field. Showing them next to the
       // alert turns "Validation failed" into an actionable message.
@@ -237,12 +305,133 @@ export default function TeachersPage() {
       )
     } catch (cause) {
       setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Could not reissue the class teacher credentials.',
+        apiErrorMessage(
+          cause,
+          'Could not reissue the class teacher credentials.',
+        ),
       )
     } finally {
       setResendingMembershipId(null)
+    }
+  }
+
+  function currentClassIdFor(membershipId: string): string {
+    return (
+      assignments.classTeachers.find(
+        (assignment) =>
+          assignment.membershipId === membershipId &&
+          assignment.endedAt === null,
+      )?.classId ?? ''
+    )
+  }
+
+  function openEdit(teacher: Teacher) {
+    setEditing(teacher)
+    setEditForm({
+      firstName: teacher.firstName,
+      lastName: teacher.lastName,
+      email: teacher.email,
+      phone: teacher.phone ?? '',
+      classId:
+        teacher.role === 'CLASS_TEACHER'
+          ? currentClassIdFor(teacher.membershipId)
+          : '',
+    })
+    setEditError(null)
+    setEditDetails([])
+  }
+
+  async function submitEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (!schoolId || !editing || editBusy) return
+
+    const input: UpdateTeacherInput = {
+      firstName: editForm.firstName.trim(),
+      lastName: editForm.lastName.trim(),
+      email: editForm.email.trim(),
+      phone: editForm.phone.trim() || null,
+    }
+
+    if (editing.role === 'CLASS_TEACHER' && editForm.classId) {
+      const currentClassId = currentClassIdFor(editing.membershipId)
+
+      if (editForm.classId !== currentClassId) {
+        input.classId = editForm.classId
+      }
+    }
+
+    setEditBusy(true)
+    setEditError(null)
+    setEditDetails([])
+
+    try {
+      const result = await updateTeacher(
+        schoolId,
+        editing.membershipId,
+        input,
+      )
+      const name = `${result.teacher.firstName} ${result.teacher.lastName}`
+
+      setSuccess(
+        result.emailChanged
+          ? emailVerificationMessage(
+              name,
+              result.teacher.email,
+              result.emailVerification,
+            )
+          : `${name}'s profile was updated.`,
+      )
+      setEditing(null)
+      setEditForm(EMPTY_EDIT)
+      await load()
+    } catch (cause) {
+      setEditError(
+        apiErrorMessage(cause, "Could not update this teacher's profile."),
+      )
+      setEditDetails(
+        cause instanceof ApiError ? fieldFeedback(cause.details) : [],
+      )
+    } finally {
+      setEditBusy(false)
+    }
+  }
+
+  function openRemove(teacher: Teacher) {
+    setRemoving(teacher)
+    setRemoveEmail('')
+    setRemoveReason('')
+    setRemoveError(null)
+  }
+
+  async function submitRemove(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (!schoolId || !removing || removeBusy) return
+
+    setRemoveBusy(true)
+    setRemoveError(null)
+
+    try {
+      const result = await removeTeacherMembership(
+        schoolId,
+        removing.membershipId,
+        {
+          confirmEmail: removeEmail.trim(),
+          reason: removeReason.trim() || null,
+        },
+      )
+      setSuccess(
+        `${removing.firstName} ${removing.lastName}: ${result.message}`,
+      )
+      setRemoving(null)
+      await load()
+    } catch (cause) {
+      setRemoveError(
+        apiErrorMessage(cause, "Could not remove this teacher's access."),
+      )
+    } finally {
+      setRemoveBusy(false)
     }
   }
 
@@ -389,10 +578,302 @@ export default function TeachersPage() {
                   </div>
                 </div>
               </Panel>
+
+              <Panel>
+                <h2 className="text-lg font-bold text-gradely-text">
+                  Teacher accounts
+                </h2>
+                <p className="mt-1 text-sm text-gradely-muted">
+                  Edit a teacher&apos;s name, email, phone number or class
+                  assignment. Removing access suspends only this school&apos;s
+                  membership: the account, academic records and any access to
+                  another school are preserved. Passwords are never shown or set
+                  here.
+                </p>
+
+                {teachers.length === 0 ? (
+                  <p className="mt-4 rounded-xl border border-dashed border-slate-300 p-3 text-sm text-gradely-muted">
+                    No teacher accounts have been registered for this school
+                    yet.
+                  </p>
+                ) : (
+                  <ul className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">
+                    {teachers.map((teacher) => {
+                      const active = teacher.status === 'ACTIVE'
+
+                      return (
+                        <li
+                          key={teacher.membershipId}
+                          className="flex flex-wrap items-center justify-between gap-3 px-3 py-3 text-sm"
+                        >
+                          <div className="min-w-0">
+                            <p className="font-semibold text-gradely-text">
+                              {teacher.firstName} {teacher.lastName}
+                              <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold tracking-wide text-gradely-muted uppercase">
+                                {teacher.role === 'CLASS_TEACHER'
+                                  ? 'Class teacher'
+                                  : 'Subject teacher'}
+                              </span>
+                              {!active ? (
+                                <span className="ml-2 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold tracking-wide text-red-700 uppercase">
+                                  Removed
+                                </span>
+                              ) : null}
+                            </p>
+                            <p className="mt-0.5 break-words text-xs text-gradely-muted">
+                              {teacher.email}
+                              {teacher.phone ? ` · ${teacher.phone}` : ''}
+                            </p>
+                          </div>
+
+                          {active ? (
+                            <div className="flex shrink-0 items-center gap-2">
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => openEdit(teacher)}
+                              >
+                                <Pencil
+                                  aria-hidden="true"
+                                  className="size-3.5"
+                                />
+                                Edit
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="danger"
+                                size="sm"
+                                onClick={() => openRemove(teacher)}
+                              >
+                                <Trash2
+                                  aria-hidden="true"
+                                  className="size-3.5"
+                                />
+                                Remove access
+                              </Button>
+                            </div>
+                          ) : null}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </Panel>
             </>
           ) : null}
         </>
       )}
+
+      <Modal
+        open={editing !== null}
+        title={
+          editing
+            ? `Edit ${editing.firstName} ${editing.lastName}`
+            : 'Edit teacher'
+        }
+        description="Changes apply immediately. A new email address must be verified by the teacher before it is trusted. No password field is shown because administrators cannot set or view passwords."
+        onClose={() => {
+          if (!editBusy) setEditing(null)
+        }}
+        wide
+      >
+        <form onSubmit={(event) => void submitEdit(event)} className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FormField
+              label="First name"
+              value={editForm.firstName}
+              onChange={(event) =>
+                setEditForm((current) => ({
+                  ...current,
+                  firstName: event.target.value,
+                }))
+              }
+              required
+              minLength={2}
+              maxLength={80}
+            />
+            <FormField
+              label="Last name"
+              value={editForm.lastName}
+              onChange={(event) =>
+                setEditForm((current) => ({
+                  ...current,
+                  lastName: event.target.value,
+                }))
+              }
+              required
+              minLength={2}
+              maxLength={80}
+            />
+          </div>
+          <FormField
+            label="Email address"
+            type="email"
+            value={editForm.email}
+            onChange={(event) =>
+              setEditForm((current) => ({
+                ...current,
+                email: event.target.value,
+              }))
+            }
+            hint="Changing this address signs the teacher out and sends a verification link to the new address."
+            required
+          />
+          <FormField
+            label="Mobile number (optional)"
+            type="tel"
+            value={editForm.phone}
+            onChange={(event) =>
+              setEditForm((current) => ({
+                ...current,
+                phone: event.target.value,
+              }))
+            }
+            placeholder="e.g. 024 000 0000"
+            maxLength={20}
+          />
+          {editing?.role === 'CLASS_TEACHER' ? (
+            <SelectField
+              label="Class assignment"
+              value={editForm.classId}
+              onChange={(event) =>
+                setEditForm((current) => ({
+                  ...current,
+                  classId: event.target.value,
+                }))
+              }
+              hint={
+                editForm.classId
+                  ? 'Moving the teacher ends their previous class assignment.'
+                  : 'This teacher is not currently assigned to a class.'
+              }
+            >
+              <option value="">Keep current class assignment</option>
+              {classes
+                .filter((schoolClass) => !schoolClass.isArchived)
+                .map((schoolClass) => (
+                  <option key={schoolClass.id} value={schoolClass.id}>
+                    {schoolClass.name}
+                  </option>
+                ))}
+            </SelectField>
+          ) : null}
+
+          {editError ? (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+            >
+              <p>{editError}</p>
+              {editDetails.length > 0 ? (
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {editDetails.map((detail) => (
+                    <li key={`${detail.field}:${detail.message}`}>
+                      <span className="font-semibold">{detail.label}:</span>{' '}
+                      {detail.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setEditing(null)}
+              disabled={editBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              loading={editBusy}
+              disabled={
+                editForm.firstName.trim() === '' ||
+                editForm.lastName.trim() === '' ||
+                editForm.email.trim() === ''
+              }
+            >
+              <Pencil aria-hidden="true" className="size-4" />
+              Save changes
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={removing !== null}
+        title={
+          removing
+            ? `Remove ${removing.firstName} ${removing.lastName}'s access?`
+            : 'Remove teacher access'
+        }
+        description="This suspends the teacher's membership in this school and ends their active class and subject assignments. The account, pupils, scores, reports and audit history are preserved, and access to any other school is untouched."
+        onClose={() => {
+          if (!removeBusy) setRemoving(null)
+        }}
+      >
+        <form
+          onSubmit={(event) => void submitRemove(event)}
+          className="space-y-4"
+        >
+          <p className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm leading-relaxed text-amber-900">
+            This does not delete the account or any academic data. To confirm,
+            type the teacher&apos;s current email address exactly.
+          </p>
+          <FormField
+            label="Teacher email address"
+            type="email"
+            value={removeEmail}
+            onChange={(event) => setRemoveEmail(event.target.value)}
+            placeholder={removing?.email ?? ''}
+            required
+          />
+          <FormField
+            label="Reason (optional)"
+            value={removeReason}
+            onChange={(event) => setRemoveReason(event.target.value)}
+            maxLength={500}
+            hint="Stored in the audit trail for this school."
+          />
+
+          {removeError ? (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+            >
+              {removeError}
+            </div>
+          ) : null}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setRemoving(null)}
+              disabled={removeBusy}
+            >
+              Keep access
+            </Button>
+            <Button
+              type="submit"
+              variant="danger"
+              loading={removeBusy}
+              disabled={
+                !removing ||
+                removeEmail.trim().toLowerCase() !==
+                  removing.email.trim().toLowerCase()
+              }
+            >
+              <Trash2 aria-hidden="true" className="size-4" />
+              Remove access
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       <Modal
         open={registerOpen}

@@ -27,11 +27,28 @@ describe('API base URL resolution', () => {
     assert.equal(resolved.baseUrl, 'http://localhost:4000')
   })
 
-  it('never falls back to localhost in a production bundle', () => {
+  it('supports explicit same-origin proxy mode in any environment', () => {
+    for (const isProduction of [false, true]) {
+      const resolved = resolveApiBaseUrl('same-origin', isProduction)
+
+      assert.equal(resolved.error, null)
+      assert.equal(resolved.baseUrl, '')
+    }
+  })
+
+  it('defaults a production bundle without a value to same-origin mode', () => {
     const resolved = resolveApiBaseUrl(undefined, true)
 
+    assert.equal(resolved.error, null)
     assert.equal(resolved.baseUrl, '')
-    assert.match(resolved.error ?? '', /VITE_API_URL is not configured/)
+  })
+
+  it('never falls back to localhost in a production bundle', () => {
+    for (const value of [undefined, '', '   ', 'same-origin']) {
+      const resolved = resolveApiBaseUrl(value, true)
+
+      assert.notEqual(resolved.baseUrl, LOCAL_API_URL)
+    }
   })
 
   it('rejects a localhost API URL in a production bundle', () => {
@@ -82,6 +99,8 @@ describe('single API origin', () => {
 
     assert.match(text, /export const API_BASE_URL/)
     assert.match(text, /credentials: 'include'/)
+    assert.match(text, /readonly code: string \| null/)
+    assert.match(text, /payload\?\.error\?\.code/)
   })
 
   for (const modulePath of [
@@ -105,10 +124,17 @@ describe('single API origin', () => {
 })
 
 describe('build-time API URL check', () => {
-  it('blocks a build without VITE_API_URL', () => {
+  it('allows a build without VITE_API_URL by selecting same-origin mode', () => {
     const check = checkDeployableApiUrl(undefined)
 
-    assert.ok(check.error)
+    assert.equal(check.error, null)
+    assert.equal(check.warning, null)
+  })
+
+  it('allows an explicit same-origin build', () => {
+    const check = checkDeployableApiUrl('same-origin')
+
+    assert.equal(check.error, null)
     assert.equal(check.warning, null)
   })
 
@@ -130,5 +156,29 @@ describe('build-time API URL check', () => {
 
     assert.equal(check.error, null)
     assert.equal(check.warning, null)
+  })
+})
+
+describe('production same-origin rewrite', () => {
+  it('proxies /api before the SPA fallback', async () => {
+    const config = JSON.parse(await source('../vercel.json')) as {
+      rewrites?: Array<{ source: string; destination: string }>
+    }
+
+    const rewrites = config.rewrites ?? []
+    const apiIndex = rewrites.findIndex(
+      (rewrite) => rewrite.source === '/api/:path*',
+    )
+    const spaIndex = rewrites.findIndex(
+      (rewrite) => rewrite.source === '/(.*)',
+    )
+
+    assert.ok(apiIndex >= 0, 'expected an /api rewrite')
+    assert.ok(spaIndex >= 0, 'expected the SPA fallback')
+    assert.ok(apiIndex < spaIndex, '/api must be matched before the SPA fallback')
+    assert.match(
+      rewrites[apiIndex].destination,
+      /^https:\/\/wisegradebackend\.vercel\.app\/api\/:path\*$/,
+    )
   })
 })

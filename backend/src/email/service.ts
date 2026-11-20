@@ -85,6 +85,7 @@ const CLAIM_LEASE_MS = SEND_TIMEOUT_MS + 60_000
 const SENSITIVE_TEMPLATES: ReadonlySet<EmailTemplateName> = new Set([
   'admin-welcome',
   'admin-verification-resend',
+  'email-change-verification',
   'teacher-credentials',
   'subject-assignment',
   'subject-code-replaced',

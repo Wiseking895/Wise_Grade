@@ -30,7 +30,12 @@ export function requireSchoolAccess(
   ): Promise<void> {
     try {
       if (!req.auth && !req.subjectAuth) {
-        throw new HttpError(401, 'Authentication required')
+        throw new HttpError(
+          401,
+          'Authentication required',
+          undefined,
+          'auth_missing',
+        )
       }
 
       const rawSchoolId = req.params[paramName]
@@ -83,19 +88,20 @@ export function requireSchoolAccess(
         throw new HttpError(403, 'You do not have access to this school')
       }
 
-      // Newly registered school administrators must verify their address before
-      // school administration is unlocked. The flag defaults to false, so an
-      // account created before this rule (or a platform administrator) is never
-      // retroactively blocked. Class teachers and subject teachers are not
-      // subject to administrator verification.
+      // An account whose address was changed by an administrator must confirm
+      // the new address before school administration or a teacher workspace is
+      // unlocked. The flag defaults to false, so existing accounts are never
+      // retroactively blocked. Platform administrators hold no membership and
+      // are therefore unaffected.
       if (
-        membership.role === 'SCHOOL_ADMIN' &&
         req.auth?.user.emailVerificationRequired === true &&
         req.auth.user.emailVerifiedAt == null
       ) {
         throw new HttpError(
           403,
-          'Verify your email address before accessing school administration.',
+          'Verify your email address before accessing this school.',
+          undefined,
+          'email_verification_required',
         )
       }
 

@@ -4,7 +4,9 @@ import type { MembershipRecord } from '../auth/repository.js'
 import type { AuthRepository } from '../auth/repository.js'
 import { toPublicMembership, toPublicSchool } from '../auth/presenter.js'
 import { generateTemporaryPassword, hashPassword } from '../auth/password.js'
+import { generateOpaqueToken, hashToken } from '../auth/tokens.js'
 import { parseBody } from '../auth/validation.js'
+import { env } from '../config/env.js'
 import { HttpError } from '../errors/http-error.js'
 import { createAuthenticate } from '../middleware/authenticate.js'
 import { requireRole, requireSchoolAccess } from '../middleware/authorize.js'
@@ -29,6 +31,7 @@ import {
   pupilListQuerySchema,
   registerClassWithTeacherSchema,
   registerTeacherSchema,
+  removeTeacherMembershipSchema,
   pupilPhotoUploadBodySchema,
   schoolLogoUploadBodySchema,
   signatureDetailsSchema,
@@ -36,6 +39,7 @@ import {
   updatePupilSchema,
   updateSchoolSchema,
   updateSubjectSchema,
+  updateTeacherSchema,
 } from '../schools/validation.js'
 import {
   decodePupilPhotoUpload,
@@ -48,7 +52,7 @@ import {
 import { sha256, type StorageAdapter } from '../storage/storage.js'
 import { NoopEmailService, type EmailService } from '../email/service.js'
 import { formatEmailDateTime } from '../email/templates.js'
-import { accessCodeUrl, loginUrl } from '../email/links.js'
+import { accessCodeUrl, loginUrl, verificationUrl } from '../email/links.js'
 
 function requireAccess(req: Request): MembershipRecord {
   if (!req.schoolAccess) {
@@ -246,6 +250,60 @@ export function createSchoolsRouter(
       return 'not_sent'
     } catch {
       console.error('[gradely-api] could not email class teacher credentials')
+      return 'not_sent'
+    }
+  }
+
+  /**
+   * Sends the single-use link that confirms a teacher's new email address.
+   * The token is stored only as a hash and is never returned to the caller.
+   */
+  async function sendTeacherEmailChangeVerification(input: {
+    schoolId: string
+    teacher: TeacherRecord
+    previousEmail: string
+    ipAddress?: string
+  }): Promise<'sent' | 'queued' | 'not_sent'> {
+    try {
+      const schoolName = await schoolDisplayName(input.schoolId)
+      const expiryHours = env.EMAIL_VERIFICATION_EXPIRY_HOURS
+      const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000)
+      const token = generateOpaqueToken()
+      const record = await authRepository.createEmailVerificationToken({
+        userId: input.teacher.userId,
+        tokenHash: hashToken(token),
+        expiresAt,
+        ipAddress: input.ipAddress,
+      })
+
+      const result = await email.send({
+        template: 'email-change-verification',
+        to: input.teacher.email,
+        dedupeKey: `verify-email:${record.id}`,
+        data: {
+          firstName: input.teacher.firstName,
+          schoolName,
+          previousEmail: input.previousEmail,
+          verificationUrl: verificationUrl(token),
+          expiresAt: formatEmailDateTime(expiresAt),
+          expiryHours,
+        },
+      })
+
+      if (result.status === 'sent') {
+        return 'sent'
+      }
+
+      if (result.status === 'queued') {
+        return 'queued'
+      }
+
+      return 'not_sent'
+    } catch {
+      // Never surface a token, SMTP error or provider detail to the caller.
+      console.error(
+        '[gradely-api] could not email the teacher email-change verification',
+      )
       return 'not_sent'
     }
   }
@@ -934,7 +992,6 @@ export function createSchoolsRouter(
       // types or receives it; only the teacher's onboarding email contains it.
       const temporaryPassword = generateTemporaryPassword()
       const passwordHash = await hashPassword(temporaryPassword)
-      const existingUser = await authRepository.findUserByEmail(input.teacher.email)
 
       const result = await schoolRepository.registerClassWithTeacher(
         access.schoolId,
@@ -954,17 +1011,18 @@ export function createSchoolsRouter(
         auditContext(req),
       )
 
-      // The temporary password is only valid when this registration created the
-      // account. Re-assigning an existing account must never email a password
-      // the user did not just receive.
-      const onboardingEmail = existingUser
-        ? 'not_sent'
-        : await sendTeacherCredentials({
+      // The temporary password is only valid when this registration actually
+      // created the account. The repository reports that authoritative fact,
+      // so a concurrent request or an existing member can never be described
+      // as a new account or be sent a password that was not stored.
+      const onboardingEmail = result.accountCreated
+        ? await sendTeacherCredentials({
             schoolId: access.schoolId,
             teacher: result.teacher,
             className: result.class.name,
             temporaryPassword,
           })
+        : 'not_sent'
 
       res.status(201).json({ data: { ...result, onboardingEmail } })
     } catch (error) {
@@ -1597,8 +1655,7 @@ export function createSchoolsRouter(
       const input = parseBody(registerTeacherSchema, req.body)
       const temporaryPassword = generateTemporaryPassword()
       const passwordHash = await hashPassword(temporaryPassword)
-      const existingUser = await authRepository.findUserByEmail(input.email)
-      const teacher = await schoolRepository.registerTeacher(
+      const result = await schoolRepository.registerTeacher(
         access.schoolId,
         {
           email: input.email,
@@ -1613,22 +1670,133 @@ export function createSchoolsRouter(
         auditContext(req),
       )
 
-      const onboardingEmail = existingUser
-        ? 'not_sent'
-        : input.role === 'CLASS_TEACHER'
+      const onboardingEmail =
+        result.accountCreated && input.role === 'CLASS_TEACHER'
           ? await sendTeacherCredentials({
               schoolId: access.schoolId,
-              teacher,
+              teacher: result.teacher,
               className: input.className || 'your assigned class',
               temporaryPassword,
             })
           : 'not_sent'
 
-      res.status(201).json({ data: { teacher, onboardingEmail } })
+      res
+        .status(201)
+        .json({ data: { teacher: result.teacher, accountCreated: result.accountCreated, onboardingEmail } })
     } catch (error) {
       next(error)
     }
   })
+
+  /**
+   * Edits a teacher's profile and, for a class teacher, their class assignment.
+   *
+   * The administrator never sets or sees a password. A changed email address is
+   * applied immediately, marked unverified, and confirmed through a single-use
+   * link. The response reports the real dispatch outcome for that link.
+   */
+  router.patch(
+    '/:schoolId/teachers/:membershipId',
+    admin,
+    async (req, res, next) => {
+      try {
+        const access = requireAccess(req)
+        const membershipId = routeParam(req, 'membershipId')
+        const input = parseBody(updateTeacherSchema, req.body)
+
+        const before = (
+          await schoolRepository.listTeachers(access.schoolId)
+        ).find((teacher) => teacher.membershipId === membershipId)
+
+        // An administrator cannot use this endpoint to alter their own teacher
+        // identity. Platform administrators and cross-school memberships are
+        // rejected by the repository.
+        if (before && req.auth?.user.id === before.userId) {
+          throw new HttpError(
+            403,
+            'You cannot edit your own account from the teacher management screen',
+            undefined,
+            'self_target_forbidden',
+          )
+        }
+
+        const teacher = await schoolRepository.updateTeacher(
+          access.schoolId,
+          membershipId,
+          input,
+          auditContext(req),
+        )
+
+        const emailChanged = Boolean(
+          input.email !== undefined &&
+            before &&
+            teacher.email.toLowerCase() !== before.email.toLowerCase(),
+        )
+
+        const emailVerification = emailChanged
+          ? await sendTeacherEmailChangeVerification({
+              schoolId: access.schoolId,
+              teacher,
+              previousEmail: before?.email ?? '',
+              ipAddress: req.ip,
+            })
+          : 'not_sent'
+
+        res.status(200).json({
+          data: { teacher, emailChanged, emailVerification },
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  /**
+   * Soft-removes a teacher membership. The account, pupils, scores, reports and
+   * audit history are preserved; active class and subject assignments end and
+   * the membership becomes inactive. Membership in another school is untouched.
+   */
+  router.delete(
+    '/:schoolId/teachers/:membershipId',
+    admin,
+    async (req, res, next) => {
+      try {
+        const access = requireAccess(req)
+        const membershipId = routeParam(req, 'membershipId')
+        const input = parseBody(removeTeacherMembershipSchema, req.body)
+
+        const before = (
+          await schoolRepository.listTeachers(access.schoolId)
+        ).find((teacher) => teacher.membershipId === membershipId)
+
+        if (before && req.auth?.user.id === before.userId) {
+          throw new HttpError(
+            403,
+            'You cannot remove your own account from the teacher management screen',
+            undefined,
+            'self_target_forbidden',
+          )
+        }
+
+        const teacher = await schoolRepository.removeTeacherMembership(
+          access.schoolId,
+          membershipId,
+          input,
+          auditContext(req),
+        )
+
+        res.status(200).json({
+          data: {
+            teacher,
+            message:
+              'Teacher access has been removed. Their account and academic history are preserved.',
+          },
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
 
   /**
    * Reissues a class teacher's temporary password after a failed or lost
