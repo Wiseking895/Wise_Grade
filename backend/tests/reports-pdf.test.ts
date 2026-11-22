@@ -1,7 +1,10 @@
 import { PDFDocument } from 'pdf-lib'
 import { describe, expect, it } from 'vitest'
 import { sha256 } from '../src/storage/storage.js'
-import { renderReportPdf } from '../src/reports/pdf.js'
+import {
+  renderReportPdf,
+  ReportLayoutOverflowError,
+} from '../src/reports/pdf.js'
 import { buildReportSet } from '../src/reports/snapshot.js'
 import {
   DEFAULT_PUPILS,
@@ -189,10 +192,13 @@ describe('report PDF rendering', () => {
     expect(loaded.getPageCount()).toBe(1)
   })
 
-  it('paginates cleanly when many subjects do not fit on one page', async () => {
+  it('fits a large realistic subject list on exactly one A4 page', async () => {
+    // Twenty-two subjects is the largest list a school can realistically
+    // timetable. With normal subject names the adaptive layout still fits one
+    // page without shrinking below the readable typography floor.
     const subjects = Array.from({ length: 22 }, (_, index) => ({
       id: `sub-${index}`,
-      name: `Subject Number ${index + 1} with a deliberately descriptive name`,
+      name: `Subject ${index + 1}`,
       sortOrder: index,
     }))
     const scores = Object.fromEntries(
@@ -210,12 +216,46 @@ describe('report PDF rendering', () => {
     const result = await renderReportPdf(snapshotFor(data))
     const loaded = await PDFDocument.load(result.data)
 
-    expect(result.pageCount).toBeGreaterThan(1)
-    expect(loaded.getPageCount()).toBe(result.pageCount)
+    expect(result.pageCount).toBe(1)
+    expect(loaded.getPageCount()).toBe(1)
+    expect(loaded.getPage(0).getWidth()).toBeCloseTo(595.28, 1)
+    expect(loaded.getPage(0).getHeight()).toBeCloseTo(841.89, 1)
+  })
 
-    for (const page of loaded.getPages()) {
-      expect(page.getWidth()).toBeCloseTo(595.28, 1)
-      expect(page.getHeight()).toBeCloseTo(841.89, 1)
+  it('reports an extreme dataset instead of hiding content or spilling to a second page', async () => {
+    // Twenty-two deliberately descriptive subject names wrap to several lines
+    // each. This cannot fit readably on one A4 page, so the renderer must fail
+    // loudly with the exact dataset figures rather than clip or paginate.
+    const subjects = Array.from({ length: 22 }, (_, index) => ({
+      id: `sub-${index}`,
+      name: `Subject Number ${index + 1} with a deliberately descriptive name`,
+      sortOrder: index,
+    }))
+    const scores = Object.fromEntries(
+      subjects.map((subject, index) => [subject.id, `${70 + (index % 25)}.00`]),
+    )
+    const data = makeReportData({
+      subjects,
+      pupils: [
+        {
+          ...DEFAULT_PUPILS[0]!,
+          scores,
+        },
+      ],
+    })
+
+    await expect(renderReportPdf(snapshotFor(data))).rejects.toMatchObject({
+      name: 'ReportLayoutOverflowError',
+      subjectCount: 22,
+    })
+
+    try {
+      await renderReportPdf(snapshotFor(data))
+    } catch (error) {
+      expect(error).toBeInstanceOf(ReportLayoutOverflowError)
+      const overflow = error as ReportLayoutOverflowError
+      expect(overflow.requiredHeight).toBeGreaterThan(overflow.availableHeight)
+      expect(overflow.message).toContain('cannot fit on one A4 page')
     }
   })
 
@@ -288,6 +328,153 @@ describe('report PDF rendering', () => {
     expect(result.pageCount).toBe(loaded.getPageCount())
     expect(result.pageCount).toBeGreaterThanOrEqual(1)
     expect(result.pageCount).toBeLessThanOrEqual(2)
+  })
+
+  it('keeps a dense but realistic report on one page with every section visible', async () => {
+    const subjects = [
+      'Mathematics',
+      'English Language',
+      'Integrated Science',
+      'Social Studies',
+      'Religious and Moral Education',
+      'Ghanaian Language',
+      'Creative Arts',
+      'Computing',
+      'French',
+      'Physical Education',
+      'Career Technology',
+      'Music and Dance',
+    ].map((name, index) => ({
+      id: `dense-sub-${index}`,
+      name,
+      sortOrder: index,
+    }))
+    const scores = Object.fromEntries(
+      subjects.map((subject, index) => [subject.id, `${55 + (index % 40)}.00`]),
+    )
+    const longRemark = [
+      'A thoughtful and persistent learner who contributes mature ideas to class discussion.',
+      'Reading comprehension and written accuracy have both improved across the term.',
+      'Homework is completed on time and presentation is consistently careful.',
+      'The next step is to build greater confidence when solving unfamiliar problems independently.',
+    ].join(' ')
+
+    const bands = [
+      { minScore: '80.00', maxScore: '100.00', gradeLabel: 'A1', remark: 'Excellent', sortOrder: 0 },
+      { minScore: '75.00', maxScore: '79.99', gradeLabel: 'A2', remark: 'Very good', sortOrder: 1 },
+      { minScore: '70.00', maxScore: '74.99', gradeLabel: 'B1', remark: 'Good', sortOrder: 2 },
+      { minScore: '65.00', maxScore: '69.99', gradeLabel: 'B2', remark: 'Good', sortOrder: 3 },
+      { minScore: '60.00', maxScore: '64.99', gradeLabel: 'C1', remark: 'Fair', sortOrder: 4 },
+      { minScore: '55.00', maxScore: '59.99', gradeLabel: 'C2', remark: 'Fair', sortOrder: 5 },
+      { minScore: '50.00', maxScore: '54.99', gradeLabel: 'D1', remark: 'Pass', sortOrder: 6 },
+      { minScore: '45.00', maxScore: '49.99', gradeLabel: 'D2', remark: 'Pass', sortOrder: 7 },
+      { minScore: '40.00', maxScore: '44.99', gradeLabel: 'E', remark: 'Weak pass', sortOrder: 8 },
+      { minScore: '0.00', maxScore: '39.99', gradeLabel: 'F', remark: 'Needs support', sortOrder: 9 },
+    ]
+    const data = makeReportData({
+      schoolName:
+        'Saint Augustine Roman Catholic Basic School Complex and Community Learning Centre',
+      className: 'Basic Six Gold Track',
+      academicTermName: 'Second Term',
+      academicYearName: '2025/2026 Academic Year',
+      subjects,
+      settings: {
+        closingDate: null,
+        reopeningDate: null,
+      },
+      pupils: [
+        {
+          ...DEFAULT_PUPILS[0]!,
+          firstName: 'Ama Serwaa Nkrumah-Adjei Boateng',
+          lastName: 'Agyeman-Danquah',
+          teacherRemarks: longRemark,
+          attitude: 'Respectful, cooperative and consistently well prepared for lessons.',
+          scores,
+        },
+      ],
+    })
+
+    for (const submission of data.submissions) {
+      submission.gradingSnapshot = {
+        id: 'scheme-wide',
+        name: 'Ten band scale',
+        bands,
+      }
+    }
+    for (const score of data.scores) {
+      const band = bands.find(
+        (item) =>
+          Number(score.finalScore) >= Number(item.minScore) &&
+          Number(score.finalScore) <= Number(item.maxScore),
+      )!
+
+      score.gradeLabel = band.gradeLabel
+      score.gradeRemark = band.remark
+      score.gradingSnapshot = {
+        id: 'scheme-wide',
+        name: 'Ten band scale',
+        bands,
+      }
+    }
+
+    const result = await renderReportPdf(
+      snapshotFor(data),
+      {
+        emblem: ONE_PIXEL_PNG,
+        pupilPhoto: ONE_PIXEL_PNG,
+        signature: ONE_PIXEL_PNG,
+      },
+      { released: true },
+    )
+    const loaded = await PDFDocument.load(result.data)
+    const text = (await extractPdfText(result.data)).replace(/\s+/g, ' ')
+
+    expect(result.pageCount).toBe(1)
+    expect(loaded.getPageCount()).toBe(1)
+    expect(loaded.getPage(0).getWidth()).toBeCloseTo(595.28, 1)
+    expect(loaded.getPage(0).getHeight()).toBeCloseTo(841.89, 1)
+
+    for (const heading of [
+      'ACADEMIC PERFORMANCE',
+      'AGGREGATE',
+      'TEACHER',
+      'ATTITUDE',
+      'GRADING SCALE',
+      'Page 1 of 1',
+    ]) {
+      expect(text).toContain(heading)
+    }
+
+    expect(text).toContain('SAINT AUGUSTINE ROMAN CATHOLIC')
+    expect(text).toContain('Ama Serwaa Nkrumah-Adjei Boateng')
+    expect(text).toContain('Basic Six Gold Track')
+    expect(text).toContain('build greater confidence')
+    expect(text).toContain('A1: 80.00 - 100.00')
+    expect(text).toContain('Mathematics')
+    expect(text).toContain('Music and Dance')
+
+    // Nothing is clipped: every text baseline and drawn box stays inside the
+    // A4 canvas, and the footer remains in the reserved bottom margin.
+    const items = (await extractPdfTextItems(result.data))[0]!
+    const boxes = (await extractPdfBoxes(result.data))[0]!
+
+    for (const item of items) {
+      expect(item.x).toBeGreaterThanOrEqual(0)
+      expect(item.x).toBeLessThanOrEqual(595.28)
+      expect(item.y).toBeGreaterThanOrEqual(0)
+      expect(item.y).toBeLessThanOrEqual(841.89)
+    }
+
+    for (const box of boxes) {
+      expect(box.x).toBeGreaterThanOrEqual(0)
+      expect(box.y).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width).toBeLessThanOrEqual(595.29)
+      expect(box.y + box.height).toBeLessThanOrEqual(841.9)
+    }
+
+    const footer = items.find((item) => item.text.includes('Page 1 of 1'))!
+    expect(footer.y).toBeGreaterThan(10)
+    expect(footer.y).toBeLessThan(40)
   })
 
   it('prints a long grading scale without overflowing the page', async () => {
@@ -393,6 +580,26 @@ describe('report PDF rendering', () => {
     expect(text).not.toContain('SCHOOL ADMIN SIGNATURE')
   })
 
+  it('wraps a long printed signature name instead of truncating it', async () => {
+    const data = makeReportData()
+    data.school.signatureName =
+      'Professor Nana Kwame Asante-Agyeman Boateng Mensah Owusu-Ansah'
+    data.school.signatureDesignation =
+      'Headmistress and School Administrator'
+    const result = await renderReportPdf(
+      snapshotFor(data),
+      { signature: ONE_PIXEL_PNG },
+      { released: true },
+    )
+    const text = (await extractPdfText(result.data)).replace(/\s+/g, ' ')
+
+    expect(result.pageCount).toBe(1)
+    expect(text).toContain(
+      'Professor Nana Kwame Asante-Agyeman Boateng Mensah Owusu-Ansah',
+    )
+    expect(text).toContain('Headmistress and School Administrator')
+  })
+
   it('keeps the generic signature caption when no printed name is stored', async () => {
     const result = await renderReportPdf(snapshotFor(), {}, { released: true })
     const text = await extractPdfText(result.data)
@@ -461,7 +668,9 @@ describe('report PDF rendering', () => {
     const summaryHeading = items.find(
       (item) => item.text.trim() === 'AGGREGATE',
     )!
-    expect(academicHeading.fontSize).toBeGreaterThanOrEqual(10.4)
+    // Section headings sit in the required 9–10pt bold range.
+    expect(academicHeading.fontSize).toBeGreaterThanOrEqual(9)
+    expect(academicHeading.fontSize).toBeLessThanOrEqual(10)
     expect(summaryHeading.y).toBeLessThan(academicHeading.y)
 
     // Every academic column heading is a single horizontal line at one size.
@@ -480,7 +689,7 @@ describe('report PDF rendering', () => {
           entry.text.trim() === heading && entry.y < academicHeading.y,
       )
       expect(item, heading).toBeDefined()
-      expect(item!.fontSize).toBeCloseTo(7.8, 1)
+      expect(item!.fontSize).toBeCloseTo(8, 1)
       expect(item!.fontName).toBe(boldFont)
       return item!
     })
@@ -493,7 +702,7 @@ describe('report PDF rendering', () => {
           (entry) => entry.text.trim() === label && entry.y < academicHeading.y,
         )
         expect(item, label).toBeDefined()
-        expect(item!.fontSize).toBeCloseTo(7.8, 1)
+        expect(item!.fontSize).toBeCloseTo(8, 1)
         return item!
       },
     )
@@ -507,12 +716,13 @@ describe('report PDF rendering', () => {
       (item) =>
         item.y < academicHeading.y - 40 &&
         item.y > summaryHeading.y &&
-        item.fontSize > 9.4,
+        item.fontSize > 8.7,
     )
     expect(academicCells.length).toBeGreaterThan(10)
     for (const item of academicCells) {
       if (item.text.trim() === '') continue
-      expect(item.fontSize).toBeCloseTo(9.6, 1)
+      // Subject table body text stays inside the required 8–9pt semibold range.
+      expect(item.fontSize).toBeCloseTo(8.8, 1)
       expect(item.fontName).toBe(boldFont)
     }
 
@@ -605,7 +815,8 @@ describe('report PDF rendering', () => {
     const longText = (await extractPdfText(longResult.data)).replace(/\s+/g, ' ')
 
     expect(longPanels.length).toBeGreaterThanOrEqual(2)
-    expect(longPanels[0]!.height).toBeGreaterThan(shortHeight + 20)
+    // Long remarks wrap and grow the panel instead of being truncated.
+    expect(longPanels[0]!.height).toBeGreaterThan(shortHeight + 5)
     expect(longText).toContain('Continued practice at home will keep this progress moving forward.')
   })
 

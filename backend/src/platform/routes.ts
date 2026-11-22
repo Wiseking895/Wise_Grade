@@ -15,6 +15,7 @@ import {
 import { buildSchoolSlug } from '../lib/slug.js'
 import { createAuthenticate, type AuthContext } from '../middleware/authenticate.js'
 import { requirePlatformAdmin } from '../middleware/authorize.js'
+import { noStore } from '../middleware/cache.js'
 import { requireTrustedOrigin } from '../middleware/csrf.js'
 import { createRateLimiter } from '../middleware/rate-limit.js'
 import type { StorageAdapter } from '../storage/storage.js'
@@ -24,10 +25,15 @@ import {
 } from './notifications.js'
 import type { PlatformRepository } from './repository.js'
 import {
+  platformAccountDeleteSchema,
   platformAccountEmailSchema,
+  platformAccountListQuerySchema,
   platformAccountPasswordSchema,
   platformAccountProfileSchema,
+  platformAccountRestoreSchema,
+  platformAccountStatusSchema,
   platformAuditQuerySchema,
+  platformDeletedAccountListQuerySchema,
   platformSchoolListQuerySchema,
   platformSchoolStatusSchema,
   platformSchoolUpdateSchema,
@@ -67,6 +73,52 @@ function notFound(message: string): HttpError {
 }
 
 /**
+ * Converts a repository account error into a safe HTTP response. Unknown
+ * failures fall through to the central error handler.
+ */
+function accountErrorResponse(error: unknown): HttpError | null {
+  if (typeof error !== 'object' || error === null) {
+    return null
+  }
+
+  const code = (error as { code?: unknown }).code
+
+  if (typeof code !== 'string') {
+    return null
+  }
+
+  const message =
+    error instanceof Error ? error.message : 'The account operation failed.'
+  const field = (error as { field?: unknown }).field
+  const details =
+    typeof field === 'string' ? [{ field, message }] : undefined
+
+  if (code === 'NOT_FOUND') {
+    return new HttpError(404, message)
+  }
+
+  if (code === 'CONFIRMATION_MISMATCH') {
+    return new HttpError(400, message, details, 'confirmation_mismatch')
+  }
+
+  if (
+    [
+      'ALREADY_DELETED',
+      'ALREADY_RESTORED',
+      'NOT_ARCHIVED',
+      'SELF_DELETION',
+      'SELF_SUSPENSION',
+      'LAST_ADMIN',
+      'CONFLICT',
+    ].includes(code)
+  ) {
+    return new HttpError(409, message, details, code.toLowerCase())
+  }
+
+  return null
+}
+
+/**
  * Central Platform Super Admin API.
  *
  * Every route requires an authenticated session whose user is a platform
@@ -101,6 +153,9 @@ export function createPlatformRouter(
     keyGenerator: (req) => req.auth?.user.id ?? req.ip ?? 'unknown',
   })
 
+  // Platform responses expose account, billing and audit data. Never allow a
+  // browser or intermediary cache to retain them.
+  router.use(noStore)
   router.use(authenticate, requirePlatformAdmin(), trustedOrigin)
 
   router.get('/overview', async (_req, res, next) => {
@@ -362,6 +417,114 @@ export function createPlatformRouter(
       next(error)
     }
   })
+
+  // -------------------------------------------------------------------------
+  // Account directory, suspension, archive and restoration
+  // -------------------------------------------------------------------------
+
+  router.get('/accounts', async (req, res, next) => {
+    try {
+      const query = platformAccountListQuerySchema.parse(req.query)
+      const page = await platformRepository.listAccounts({
+        search: query.search,
+        role: query.role,
+        status: query.status,
+        limit: query.limit,
+        offset: query.offset,
+      })
+
+      res.status(200).json({ data: page })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  router.get('/accounts/deleted', async (req, res, next) => {
+    try {
+      const query = platformDeletedAccountListQuerySchema.parse(req.query)
+      const page = await platformRepository.listDeletedAccounts({
+        search: query.search,
+        status: query.status,
+        limit: query.limit,
+        offset: query.offset,
+      })
+
+      res.status(200).json({ data: page })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  router.post(
+    '/accounts/:userId/status',
+    reauth,
+    async (req, res, next) => {
+      try {
+        const auth = requireAuth(req)
+        const userId = routeParam(req, 'userId')
+        const input = parseBody(platformAccountStatusSchema, req.body)
+        const account = await platformRepository.setAccountActive(
+          auth.user.id,
+          userId,
+          input.isActive,
+          input.reason,
+          { ipAddress: req.ip, userAgent: req.get('user-agent') },
+        )
+
+        res.status(200).json({ data: { account } })
+      } catch (error) {
+        next(accountErrorResponse(error) ?? error)
+      }
+    },
+  )
+
+  router.post(
+    '/accounts/:userId/delete',
+    accountLimiter.middleware,
+    reauth,
+    async (req, res, next) => {
+      try {
+        const auth = requireAuth(req)
+        const userId = routeParam(req, 'userId')
+        const input = parseBody(platformAccountDeleteSchema, req.body)
+        const account = await platformRepository.deleteAccount(
+          auth.user.id,
+          userId,
+          input.reason,
+          input.confirmEmail,
+          { ipAddress: req.ip, userAgent: req.get('user-agent') },
+        )
+
+        res.status(200).json({ data: { account } })
+      } catch (error) {
+        next(accountErrorResponse(error) ?? error)
+      }
+    },
+  )
+
+  router.post(
+    '/accounts/deleted/:deletionId/restore',
+    accountLimiter.middleware,
+    reauth,
+    async (req, res, next) => {
+      try {
+        const auth = requireAuth(req)
+        const deletionId = routeParam(req, 'deletionId')
+        const input = parseBody(platformAccountRestoreSchema, req.body)
+        const result = await platformRepository.restoreDeletedAccount(
+          auth.user.id,
+          deletionId,
+          input.reason,
+          input.confirmEmail,
+          { ipAddress: req.ip, userAgent: req.get('user-agent') },
+        )
+
+        res.status(200).json({ data: result })
+      } catch (error) {
+        next(accountErrorResponse(error) ?? error)
+      }
+    },
+  )
 
   router.get('/audit', async (req, res, next) => {
     try {

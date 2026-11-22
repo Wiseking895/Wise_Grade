@@ -1,12 +1,19 @@
 import type {
   PlatformAccount,
+  PlatformAccountFilter,
+  PlatformAccountPage,
   PlatformAccountSession,
   PlatformAuditContext,
   PlatformAuditEntry,
   PlatformAuditFilter,
   PlatformAuditPage,
+  PlatformDeletedAccount,
+  PlatformDeletedAccountFilter,
+  PlatformDeletedAccountPage,
+  PlatformManagedAccount,
   PlatformMonitoring,
   PlatformOverview,
+  PlatformRestoreResult,
   PlatformSchoolDetail,
   PlatformSchoolFilter,
   PlatformSchoolSummary,
@@ -55,6 +62,40 @@ export interface PlatformRepository {
     input: PlatformSettingsUpdate,
     audit: PlatformAuditContext,
   ): Promise<PlatformSettings>
+
+  /** Platform-wide account directory for the deletion and suspension workflow. */
+  listAccounts(filter: PlatformAccountFilter): Promise<PlatformAccountPage>
+
+  /** Suspend or reactivate a platform-managed account. */
+  setAccountActive(
+    actorUserId: string,
+    userId: string,
+    isActive: boolean,
+    reason: string | undefined,
+    audit: PlatformAuditContext,
+  ): Promise<PlatformManagedAccount>
+
+  /** Archive an account and write an immutable history row. */
+  deleteAccount(
+    actorUserId: string,
+    userId: string,
+    reason: string,
+    confirmEmail: string,
+    audit: PlatformAuditContext,
+  ): Promise<PlatformDeletedAccount>
+
+  listDeletedAccounts(
+    filter: PlatformDeletedAccountFilter,
+  ): Promise<PlatformDeletedAccountPage>
+
+  /** Restore an archived account after conflict and security checks. */
+  restoreDeletedAccount(
+    actorUserId: string,
+    deletionId: string,
+    reason: string | undefined,
+    confirmEmail: string,
+    audit: PlatformAuditContext,
+  ): Promise<PlatformRestoreResult>
 
   getAccount(userId: string): Promise<PlatformAccount | null>
 

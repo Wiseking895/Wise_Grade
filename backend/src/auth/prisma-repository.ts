@@ -38,6 +38,7 @@ interface DbUser {
   phone?: string | null
   isPlatformAdmin: boolean
   isActive: boolean
+  deletedAt?: Date | null
   mfaEnabled?: boolean
   lockedUntil?: Date | null
   failedLoginCount?: number
@@ -84,6 +85,7 @@ function mapUser(user: DbUser): UserRecord {
     phone: user.phone ?? null,
     isPlatformAdmin: user.isPlatformAdmin,
     isActive: user.isActive,
+    deletedAt: user.deletedAt ?? null,
     mfaEnabled: user.mfaEnabled ?? false,
     lockedUntil: user.lockedUntil ?? null,
     failedLoginCount: user.failedLoginCount ?? 0,

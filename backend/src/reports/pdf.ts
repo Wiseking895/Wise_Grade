@@ -33,45 +33,7 @@ const RIGHT = PAGE.width - 32
 const TOP = 28
 const BOTTOM = PAGE.height - 34
 const CONTENT_WIDTH = RIGHT - LEFT
-
-/**
- * Height reserved for the signature image, the signing line, the printed name
- * and the designation. The signature is the last narrative block before the
- * grading scale.
- */
-const SIGNATURE_BLOCK = 64
-
-/** Header geometry. The logo is centred and noticeably larger than before. */
-const HEADER_LOGO_WIDTH = 132
-const HEADER_LOGO_HEIGHT = 76
-
-/**
- * The photograph frame was 74.4 × 91.2pt. It is a further 30% larger on both
- * axes (74.4 × 1.3 = 96.72, 91.2 × 1.3 = 118.56) while keeping the same 62:76
- * ratio, so the printed portrait stays proportional.
- */
-const PUPIL_PHOTO_WIDTH = 96.72
-const PUPIL_PHOTO_HEIGHT = 118.56
-
-/**
- * Typography for the dense reference sections. The pupil information block
- * uses one bold size for labels *and* values. It was 10.9pt; 9pt is a 17.4%
- * reduction, which keeps the section readable without crowding the page.
- * The academic table and grading scale use one bold size throughout; the
- * column headings use a slightly smaller bold size so every heading can stay
- * on one horizontal line.
- */
-const PUPIL_INFO_FONT_SIZE = 9
-const ACADEMIC_FONT_SIZE = 9.6
-const ACADEMIC_HEADER_FONT_SIZE = 7.8
-const GRADING_FONT_SIZE = 8.6
-
-/**
- * Target height for a single-line remarks panel. The previous design rendered
- * roughly 281pt; 30% of that is about 84pt. The value is a minimum, so a longer
- * written remark grows the panel rather than being clipped.
- */
-const REMARK_PANEL_TARGET_HEIGHT = 84.3
+const REMARK_GAP = 8
 
 const COLORS = {
   ink: '#111827',
@@ -83,6 +45,176 @@ const COLORS = {
   photoLine: '#9ca3af',
   white: '#ffffff',
 }
+
+/**
+ * Vertical layout profiles, tried from the most comfortable to the most
+ * compact. Typography stays inside the required readable range for the first
+ * three profiles; the last profile is only used for genuinely extreme subject
+ * counts. If even that cannot fit, rendering fails loudly instead of clipping
+ * content or spilling onto a second page.
+ */
+interface ReportStyle {
+  id: 'standard' | 'compact' | 'dense' | 'extreme'
+  schoolNameSize: number
+  reportHeadingSize: number
+  pupilNameSize: number
+  pupilValueSize: number
+  pupilLabelSize: number
+  sectionHeadingSize: number
+  tableSize: number
+  tableHeaderSize: number
+  remarkSize: number
+  remarkLabelSize: number
+  gradingSize: number
+  footerSize: number
+  metaSize: number
+  rowPadding: number
+  sectionGap: number
+  headerGap: number
+  logoWidth: number
+  logoHeight: number
+  photoWidth: number
+  photoHeight: number
+  pupilInfoMin: number
+  academicTitleHeight: number
+  columnHeaderHeight: number
+  summaryHeight: number
+  remarksMin: number
+  signatureHeight: number
+  gradingHeader: number
+  gradingRow: number
+}
+
+const STANDARD_STYLE: ReportStyle = {
+  id: 'standard',
+  schoolNameSize: 17.5,
+  reportHeadingSize: 13.5,
+  pupilNameSize: 10.5,
+  pupilValueSize: 9,
+  pupilLabelSize: 9,
+  sectionHeadingSize: 10,
+  tableSize: 8.8,
+  tableHeaderSize: 8,
+  remarkSize: 8.6,
+  remarkLabelSize: 7.4,
+  gradingSize: 8.6,
+  footerSize: 7.2,
+  metaSize: 8,
+  rowPadding: 3.5,
+  sectionGap: 8,
+  headerGap: 10,
+  logoWidth: 132,
+  logoHeight: 76,
+  photoWidth: 96.72,
+  photoHeight: 118.56,
+  pupilInfoMin: 80,
+  academicTitleHeight: 18,
+  columnHeaderHeight: 30,
+  summaryHeight: 38,
+  remarksMin: 84.3,
+  signatureHeight: 64,
+  gradingHeader: 20,
+  gradingRow: 13,
+}
+
+const COMPACT_STYLE: ReportStyle = {
+  ...STANDARD_STYLE,
+  id: 'compact',
+  reportHeadingSize: 13,
+  pupilNameSize: 10,
+  pupilValueSize: 8.8,
+  pupilLabelSize: 8.6,
+  sectionHeadingSize: 9.5,
+  tableSize: 8.4,
+  tableHeaderSize: 7.8,
+  remarkSize: 8.2,
+  gradingSize: 8.2,
+  footerSize: 7,
+  metaSize: 7.8,
+  rowPadding: 2.2,
+  sectionGap: 5,
+  headerGap: 6,
+  logoWidth: 108,
+  logoHeight: 62,
+  photoWidth: 80,
+  photoHeight: 98,
+  pupilInfoMin: 72,
+  academicTitleHeight: 16,
+  columnHeaderHeight: 26,
+  summaryHeight: 34,
+  remarksMin: 66,
+  signatureHeight: 52,
+  gradingHeader: 17,
+  gradingRow: 11.5,
+}
+
+const DENSE_STYLE: ReportStyle = {
+  ...COMPACT_STYLE,
+  id: 'dense',
+  schoolNameSize: 17.2,
+  reportHeadingSize: 13,
+  pupilValueSize: 8.6,
+  pupilLabelSize: 8.4,
+  sectionHeadingSize: 9,
+  tableSize: 8,
+  tableHeaderSize: 7.4,
+  remarkSize: 8,
+  gradingSize: 8,
+  metaSize: 7.6,
+  rowPadding: 1.4,
+  sectionGap: 3,
+  headerGap: 4,
+  logoWidth: 88,
+  logoHeight: 50,
+  photoWidth: 68,
+  photoHeight: 84,
+  pupilInfoMin: 66,
+  academicTitleHeight: 14,
+  columnHeaderHeight: 23,
+  summaryHeight: 30,
+  remarksMin: 56,
+  signatureHeight: 48,
+  gradingHeader: 15,
+  gradingRow: 10.5,
+}
+
+const EXTREME_STYLE: ReportStyle = {
+  ...DENSE_STYLE,
+  id: 'extreme',
+  schoolNameSize: 17,
+  pupilValueSize: 8.4,
+  pupilLabelSize: 8.2,
+  // The extreme profile never drops table or remark text below the 8pt
+  // readability floor. If this still cannot fit, rendering reports an overflow
+  // instead of shrinking below the agreed typography targets.
+  tableSize: 8,
+  tableHeaderSize: 7.2,
+  remarkSize: 8,
+  gradingSize: 8,
+  metaSize: 7.4,
+  rowPadding: 0.8,
+  sectionGap: 2,
+  headerGap: 3,
+  logoWidth: 72,
+  logoHeight: 40,
+  photoWidth: 56,
+  photoHeight: 70,
+  pupilInfoMin: 60,
+  academicTitleHeight: 12,
+  columnHeaderHeight: 20,
+  summaryHeight: 27,
+  remarksMin: 48,
+  signatureHeight: 42,
+  gradingHeader: 13,
+  gradingRow: 9.5,
+}
+
+const STYLES: ReportStyle[] = [
+  STANDARD_STYLE,
+  COMPACT_STYLE,
+  DENSE_STYLE,
+  EXTREME_STYLE,
+]
 
 let regularFont: Buffer | null | undefined
 let boldFont: Buffer | null | undefined
@@ -180,6 +312,44 @@ export interface ReportPdfOptions {
   released?: boolean
 }
 
+/**
+ * Raised when even the most compact readable layout cannot fit the report on a
+ * single A4 page. The error carries the exact dataset figures so the platform
+ * can report the case instead of silently hiding content.
+ */
+export class ReportLayoutOverflowError extends Error {
+  readonly subjectCount: number
+  readonly requiredHeight: number
+  readonly availableHeight: number
+
+  constructor(input: {
+    subjectCount: number
+    requiredHeight: number
+    availableHeight: number
+  }) {
+    super(
+      `The report cannot fit on one A4 page: ${input.subjectCount} subjects require ${input.requiredHeight.toFixed(1)}pt but only ${input.availableHeight.toFixed(1)}pt are available. Reduce the subject count or shorten the remarks.`,
+    )
+    this.name = 'ReportLayoutOverflowError'
+    this.subjectCount = input.subjectCount
+    this.requiredHeight = input.requiredHeight
+    this.availableHeight = input.availableHeight
+  }
+}
+
+interface LayoutPlan {
+  style: ReportStyle
+  headerHeight: number
+  pupilHeight: number
+  academicHeight: number
+  summaryHeight: number
+  remarksHeight: number
+  signatureHeight: number
+  gradingHeight: number
+  totalHeight: number
+  availableHeight: number
+}
+
 export async function renderReportPdf(
   snapshot: ReportSnapshot,
   assets: ReportPdfAssets = {},
@@ -240,48 +410,38 @@ export async function renderReportPdf(
     })
   })
 
-  newPage(state)
-  drawSchoolHeader(state)
+  startPage(state)
 
-  state.y = drawPupilInformation(state, state.y)
-  state.y = drawAcademicTable(state, state.y)
-  state.y = ensureSpace(state, state.y, 48)
-  state.y = drawSummary(state, state.y)
+  let plan: LayoutPlan
 
-  // The grading scale is the document footer. The remark boxes previously
-  // expanded into all remaining space. They now occupy about 30% of that
-  // height so the page reads as one formal document without oversized empty
-  // panels, while still growing when the written remark needs more room.
-  const gradingH = gradingHeight(snapshot)
-  let remarksHeight = preferredRemarksHeight(state, state.y, gradingH)
+  try {
+    plan = planLayout(state)
+  } catch (error) {
+    // Close the in-memory document before surfacing the overflow so the
+    // renderer never leaves a half-open stream behind.
+    doc.end()
+    throw error
+  }
 
-  state.y = ensureSpace(
-    state,
-    state.y,
-    remarksHeight + SIGNATURE_BLOCK + 12,
-  )
-  // A page break gives the remarks more room, so re-measure before drawing.
-  remarksHeight = preferredRemarksHeight(state, state.y, gradingH)
-  state.y = drawRemarks(state, state.y, remarksHeight)
+  const style = plan.style
 
-  // The signature follows the two boxes closely, and the grading scale follows
-  // the signature. This keeps the footer compact instead of anchoring the
-  // signing block at the bottom of the page and leaving a large empty gap.
-  state.y = ensureSpace(state, state.y + 2, SIGNATURE_BLOCK + 4)
-  state.y = drawSignature(state, state.y)
-
-  state.y = ensureSpace(state, state.y + 8, gradingH)
-  state.y = drawGradingScale(state, state.y)
-  drawPageFooter(state)
+  state.y = drawSchoolHeader(state, style)
+  state.y = drawPupilInformation(state, state.y, style)
+  state.y = drawAcademicTable(state, state.y, style)
+  state.y = drawSummary(state, state.y, style)
+  state.y = drawRemarks(state, state.y, style)
+  state.y = drawSignature(state, state.y, style)
+  state.y = drawGradingScale(state, state.y, style)
+  drawPageFooter(state, style)
   doc.end()
 
   return completed
 }
 
-function newPage(state: RenderState): void {
+function startPage(state: RenderState): void {
   const { doc } = state
   doc.addPage({ size: 'A4', margins: { top: 0, bottom: 0, left: 0, right: 0 } })
-  state.page += 1
+  state.page = 1
   state.y = TOP
   doc.save()
   doc.strokeColor(COLORS.border).lineWidth(0.9)
@@ -305,6 +465,8 @@ function newPage(state: RenderState): void {
         width: CONTENT_WIDTH,
         align: 'center',
         characterSpacing: 0.4,
+        lineBreak: false,
+        ellipsis: true,
       })
 
     doc.save()
@@ -317,6 +479,8 @@ function newPage(state: RenderState): void {
       .text(state.label, 40, PAGE.height / 2 - 24, {
         width: PAGE.width - 80,
         align: 'center',
+        lineBreak: false,
+        ellipsis: true,
       })
     doc.restore()
   }
@@ -325,155 +489,535 @@ function newPage(state: RenderState): void {
   state.y = TOP + (state.released ? 8 : 20)
 }
 
-function ensureSpace(
+function textHeight(
   state: RenderState,
-  y: number,
-  needed: number,
+  value: string,
+  weight: 'regular' | 'bold',
+  size: number,
+  width: number,
+  lineGap: number,
 ): number {
-  if (y + needed <= BOTTOM) {
-    return y
-  }
+  const font = weight === 'bold' ? state.fontBold : state.fontRegular
 
-  drawPageFooter(state)
-  newPage(state)
-  drawContinuationHeading(state)
-  return Math.max(state.y, TOP + 16)
+  return state.doc
+    .font(font)
+    .fontSize(size)
+    .heightOfString(value.trim() || ' ', { width, lineGap })
 }
 
-function drawContinuationHeading(state: RenderState): void {
-  const { doc, snapshot } = state
-  doc
-    .font(state.fontBold)
-    .fontSize(10)
-    .fillColor(COLORS.ink)
-    .text(snapshot.school.name, LEFT, state.y, {
-      width: CONTENT_WIDTH,
-      align: 'center',
-      height: 15,
-      ellipsis: true,
-    })
-  state.y += 18
+function reportHeading(snapshot: ReportSnapshot): string {
+  return `${snapshot.academicTerm.name.toUpperCase()} REPORT CARD`
 }
 
-function drawSchoolHeader(state: RenderState): void {
-  const { doc, snapshot, assets } = state
-  const headerTop = state.y
-
-  // The photograph and the school logo form one top header row. Both start at
-  // the same y coordinate so their top edges line up exactly. The photo keeps
-  // the top-right corner; the branding column is limited to the space to its
-  // left so a long school name, address or contact line can never run under it.
-  drawPupilPhoto(
-    state,
-    assets.pupilPhoto,
-    RIGHT - PUPIL_PHOTO_WIDTH,
-    headerTop,
-    PUPIL_PHOTO_WIDTH,
-    PUPIL_PHOTO_HEIGHT,
-  )
-
-  const brandingRight = RIGHT - PUPIL_PHOTO_WIDTH - 12
-  const brandingWidth = brandingRight - LEFT
-  const brandingCenter = LEFT + brandingWidth / 2
-
-  // The school logo is centred in the branding column. Older snapshots may only
-  // have an emblem or crest, so those remain fallbacks.
-  drawCenteredImage(
-    state,
-    assets.schoolLogo ?? assets.emblem ?? assets.crest,
-    brandingCenter - HEADER_LOGO_WIDTH / 2,
-    headerTop,
-    HEADER_LOGO_WIDTH,
-    HEADER_LOGO_HEIGHT,
-  )
-
-  // Keep the school name close beneath the logo. The previous design added 5pt
-  // and then pushed the name below the photograph frame, which created a large
-  // gap once the photo grew. Two points is enough visual breathing room.
-  let y = headerTop + HEADER_LOGO_HEIGHT + 2
-
-  const schoolName = snapshot.school.name.toUpperCase()
-  doc.font(state.fontBold).fontSize(17.5)
-  const nameHeight = Math.min(
-    52,
-    Math.max(
-      21,
-      doc.heightOfString(schoolName, {
-        width: brandingWidth,
-        lineGap: 1.2,
-      }),
-    ),
-  )
-
-  doc
-    .fillColor(COLORS.ink)
-    .text(schoolName, LEFT, y, {
-      width: brandingWidth,
-      align: 'center',
-      height: nameHeight,
-      lineGap: 1.2,
-      ellipsis: true,
-    })
-  y += nameHeight + 1
-
-  const address = [snapshot.school.landmark, snapshot.school.address]
+function schoolAddress(snapshot: ReportSnapshot): string {
+  return [snapshot.school.landmark, snapshot.school.address]
     .map((value) => safeText(value ?? null))
     .filter((value) => value !== '')
     .join('  •  ')
+}
+
+function schoolContact(snapshot: ReportSnapshot): string {
+  return [snapshot.school.phone, snapshot.school.email]
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .join('  •  ')
+}
+
+function brandingWidth(style: ReportStyle): number {
+  return RIGHT - style.photoWidth - 12 - LEFT
+}
+
+function measureHeaderHeight(state: RenderState, style: ReportStyle): number {
+  const { snapshot } = state
+  const width = brandingWidth(style)
+  let height = style.logoHeight + 2
+
+  height += textHeight(
+    state,
+    snapshot.school.name.toUpperCase(),
+    'bold',
+    style.schoolNameSize,
+    width,
+    1.2,
+  )
+  height += 1
+  height += textHeight(
+    state,
+    reportHeading(snapshot),
+    'bold',
+    style.reportHeadingSize,
+    width,
+    0.8,
+  )
+  height += 1
+
+  const address = schoolAddress(snapshot)
 
   if (address) {
-    doc.font(state.fontRegular).fontSize(8.8)
-    const addressHeight = Math.min(
-      24,
+    height += textHeight(state, address, 'regular', style.metaSize, width, 0.4)
+  }
+
+  const contact = schoolContact(snapshot)
+
+  if (contact) {
+    height +=
+      1 +
+      textHeight(
+        state,
+        contact,
+        'regular',
+        Math.max(7, style.metaSize - 0.4),
+        width,
+        0.4,
+      )
+  }
+
+  return Math.max(style.photoHeight, height) + style.headerGap
+}
+
+function measurePupilInformation(
+  state: RenderState,
+  style: ReportStyle,
+): {
+  blocks: Array<
+    Array<{
+      label: string
+      value: string
+      labelHeight: number
+      valueHeight: number
+      height: number
+      prominence: number
+      valueSize: number
+    }>
+  >
+  widths: number[]
+  naturalHeights: number[]
+  height: number
+} {
+  const { snapshot } = state
+  const blockWidths = [
+    CONTENT_WIDTH * 0.37,
+    CONTENT_WIDTH * 0.34,
+    CONTENT_WIDTH * 0.29,
+  ]
+  const blocks: Array<{
+    rows: Array<[string, string]>
+    nameRow?: boolean
+  }> = [
+    {
+      rows: [
+        ['PUPIL NAME', display(snapshot.pupil.fullName)],
+        ['INDEX / ADMISSION NUMBER', display(snapshot.pupil.admissionNumber)],
+        ['CLASS', display(snapshot.class.name)],
+      ],
+      nameRow: true,
+    },
+    {
+      rows: [
+        ['ACADEMIC YEAR', display(snapshot.academicYear.name)],
+        ['TERM', display(snapshot.academicTerm.name)],
+        ['CLASS POSITION', display(snapshot.document.classPositionDisplay)],
+        ['NUMBER ON ROLL', display(snapshot.document.numberOnRoll)],
+      ],
+    },
+    {
+      rows: [
+        ['CLOSING DATE', formatDate(snapshot.document.closingDate)],
+        ['REOPENING DATE', formatDate(snapshot.document.reopeningDate)],
+      ],
+    },
+  ]
+
+  const measured = blocks.map((block, blockIndex) => {
+    const width = (blockWidths[blockIndex] ?? CONTENT_WIDTH / 3) - 8
+
+    return block.rows.map(([label, value], rowIndex) => {
+      const isName = block.nameRow === true && rowIndex === 0
+      const valueSize = isName ? style.pupilNameSize : style.pupilValueSize
+      const labelHeight = textHeight(
+        state,
+        label,
+        'bold',
+        style.pupilLabelSize,
+        width,
+        0.4,
+      )
+      const valueHeight = textHeight(
+        state,
+        value,
+        'bold',
+        valueSize,
+        width,
+        0.4,
+      )
+      const prominence = isName ? 3 : 0
+
+      return {
+        label,
+        value,
+        labelHeight,
+        valueHeight,
+        height: labelHeight + valueHeight + 3 + prominence,
+        prominence,
+        valueSize,
+      }
+    })
+  })
+
+  const naturalHeights = measured.map((rows) =>
+    rows.reduce((sum, row) => sum + row.height, 0),
+  )
+  const height = Math.max(style.pupilInfoMin, ...naturalHeights)
+
+  return { blocks: measured, widths: blockWidths, naturalHeights, height }
+}
+
+function measureAcademicRowHeight(
+  state: RenderState,
+  style: ReportStyle,
+  subject: SnapshotSubjectRow,
+): number {
+  const values = academicRowValues(state.snapshot, subject)
+  const textHeights = ACADEMIC_COLUMNS.map((column) =>
+    textHeight(
+      state,
+      values[column.key],
+      'bold',
+      style.tableSize,
+      academicColumnWidth(column.key) - 5,
+      0.3,
+    ),
+  )
+
+  return Math.max(
+    style.tableSize + style.rowPadding * 2 + 2,
+    Math.max(...textHeights) + style.rowPadding * 2,
+  )
+}
+
+function measureAcademicHeight(
+  state: RenderState,
+  style: ReportStyle,
+): number {
+  let height = style.academicTitleHeight + style.columnHeaderHeight
+
+  if (state.snapshot.academic.mixedSubjectWeights) {
+    height +=
+      textHeight(
+        state,
+        'Per-subject weights are shown beside each score as (weight %).',
+        'bold',
+        style.metaSize,
+        CONTENT_WIDTH - 6,
+        0.3,
+      ) + 2
+  }
+
+  for (const subject of state.snapshot.academic.subjects) {
+    height += measureAcademicRowHeight(state, style, subject)
+  }
+
+  return height
+}
+
+function measureRemarksHeight(
+  state: RenderState,
+  style: ReportStyle,
+): number {
+  const width = (CONTENT_WIDTH - REMARK_GAP) / 2 - 8
+  const teacher = safeText(state.snapshot.remarks.teacher)
+  const attitude = safeText(state.snapshot.remarks.attitude)
+  const textHeightValue = Math.max(
+    textHeight(state, teacher, 'regular', style.remarkSize, width, 1),
+    textHeight(state, attitude, 'regular', style.remarkSize, width, 1),
+  )
+
+  return Math.max(style.remarksMin, textHeightValue + 17)
+}
+
+function gradingRows(
+  state: RenderState,
+  style: ReportStyle,
+): Array<{
+  bands: Array<{ gradeLabel: string; minScore: string; maxScore: string; remark: string }>
+  height: number
+}> {
+  const bands = state.snapshot.academic.grading.bands
+  const columnWidth = (CONTENT_WIDTH - 10) / 2
+  const rows: Array<{
+    bands: Array<{ gradeLabel: string; minScore: string; maxScore: string; remark: string }>
+    height: number
+  }> = []
+
+  for (let index = 0; index < bands.length; index += 2) {
+    const pair = bands.slice(index, index + 2)
+    const heights = pair.map((band) =>
       Math.max(
-        11,
-        doc.heightOfString(address, {
-          width: brandingWidth,
-          lineGap: 0.4,
-        }),
+        textHeight(
+          state,
+          `${band.gradeLabel}: ${band.minScore} - ${band.maxScore}`,
+          'bold',
+          style.gradingSize,
+          columnWidth * 0.55,
+          0.2,
+        ),
+        textHeight(
+          state,
+          band.remark,
+          'bold',
+          style.gradingSize,
+          columnWidth * 0.45 - 2,
+          0.2,
+        ),
       ),
+    )
+
+    rows.push({
+      bands: pair,
+      height: Math.max(style.gradingRow, Math.max(...heights) + 2),
+    })
+  }
+
+  return rows
+}
+
+function measureGradingHeight(
+  state: RenderState,
+  style: ReportStyle,
+): number {
+  const rows = gradingRows(state, style)
+  const rowHeight = rows.reduce((sum, row) => sum + row.height, 0)
+
+  return style.gradingHeader + rowHeight + 4
+}
+
+function signatureLineOffset(style: ReportStyle): number {
+  return Math.max(12, style.signatureHeight - 30)
+}
+
+function measureSignatureHeight(
+  state: RenderState,
+  style: ReportStyle,
+): number {
+  const printedName = safeText(state.snapshot.document.signatureName ?? null)
+  const designation = safeText(
+    state.snapshot.document.signatureDesignation ?? null,
+  )
+  const textTop = signatureLineOffset(style) + 5
+
+  if (printedName || designation) {
+    const nameHeight = printedName
+      ? textHeight(state, printedName, 'bold', 8.4, 240, 0.3)
+      : 0
+    const designationHeight = textHeight(
+      state,
+      designation || 'School Administrator',
+      'regular',
+      7.4,
+      240,
+      0.3,
+    )
+
+    return Math.max(
+      style.signatureHeight,
+      textTop + nameHeight + (printedName ? 1 : 0) + designationHeight + 2,
+    )
+  }
+
+  const caption = textHeight(
+    state,
+    safeText(state.snapshot.document.headteacherLabel ?? null) ||
+      'SCHOOL ADMIN SIGNATURE',
+    'bold',
+    7.4,
+    240,
+    0.3,
+  )
+
+  return Math.max(style.signatureHeight, textTop + caption + 2)
+}
+
+function measureLayout(state: RenderState, style: ReportStyle): LayoutPlan {
+  const headerHeight = measureHeaderHeight(state, style)
+  const pupilHeight = measurePupilInformation(state, style).height
+  const academicHeight = measureAcademicHeight(state, style)
+  const summaryHeight = style.summaryHeight
+  const remarksHeight = measureRemarksHeight(state, style)
+  const signatureHeight = measureSignatureHeight(state, style)
+  const gradingHeight = measureGradingHeight(state, style)
+  const gap = style.sectionGap
+  const totalHeight =
+    headerHeight +
+    gap +
+    pupilHeight +
+    gap +
+    academicHeight +
+    gap +
+    summaryHeight +
+    gap +
+    remarksHeight +
+    gap +
+    signatureHeight +
+    gap +
+    gradingHeight
+  const availableHeight = BOTTOM - state.y
+
+  return {
+    style,
+    headerHeight,
+    pupilHeight,
+    academicHeight,
+    summaryHeight,
+    remarksHeight,
+    signatureHeight,
+    gradingHeight,
+    totalHeight,
+    availableHeight,
+  }
+}
+
+function planLayout(state: RenderState): LayoutPlan {
+  let smallest: LayoutPlan | null = null
+
+  for (const style of STYLES) {
+    const plan = measureLayout(state, style)
+
+    if (plan.totalHeight <= plan.availableHeight) {
+      return plan
+    }
+
+    smallest = plan
+  }
+
+  throw new ReportLayoutOverflowError({
+    subjectCount: state.snapshot.academic.subjects.length,
+    requiredHeight: smallest?.totalHeight ?? 0,
+    availableHeight: smallest?.availableHeight ?? 0,
+  })
+}
+
+function drawSchoolHeader(state: RenderState, style: ReportStyle): number {
+  const { doc, snapshot, assets } = state
+  const headerTop = state.y
+
+  drawPupilPhoto(
+    state,
+    assets.pupilPhoto,
+    RIGHT - style.photoWidth,
+    headerTop,
+    style.photoWidth,
+    style.photoHeight,
+  )
+
+  const width = brandingWidth(style)
+  const brandingCenter = LEFT + width / 2
+
+  drawCenteredImage(
+    state,
+    assets.schoolLogo ?? assets.emblem ?? assets.crest,
+    brandingCenter - style.logoWidth / 2,
+    headerTop,
+    style.logoWidth,
+    style.logoHeight,
+  )
+
+  let y = headerTop + style.logoHeight + 2
+  const schoolName = snapshot.school.name.toUpperCase()
+  const nameHeight = textHeight(
+    state,
+    schoolName,
+    'bold',
+    style.schoolNameSize,
+    width,
+    1.2,
+  )
+
+  doc
+    .fillColor(COLORS.ink)
+    .font(state.fontBold)
+    .fontSize(style.schoolNameSize)
+    .text(schoolName, LEFT, y, {
+      width,
+      align: 'center',
+      height: nameHeight + 1,
+      lineGap: 1.2,
+    })
+  y += nameHeight + 1
+
+  const heading = reportHeading(snapshot)
+  const headingHeight = textHeight(
+    state,
+    heading,
+    'bold',
+    style.reportHeadingSize,
+    width,
+    0.8,
+  )
+
+  doc
+    .fillColor(COLORS.muted)
+    .font(state.fontBold)
+    .fontSize(style.reportHeadingSize)
+    .text(heading, LEFT, y, {
+      width,
+      align: 'center',
+      height: headingHeight + 1,
+      lineGap: 0.8,
+    })
+  y += headingHeight + 1
+
+  const address = schoolAddress(snapshot)
+
+  if (address) {
+    const addressHeight = textHeight(
+      state,
+      address,
+      'regular',
+      style.metaSize,
+      width,
+      0.4,
     )
 
     doc
       .fillColor(COLORS.muted)
+      .font(state.fontRegular)
+      .fontSize(style.metaSize)
       .text(address, LEFT, y, {
-        width: brandingWidth,
+        width,
         align: 'center',
-        height: addressHeight,
+        height: addressHeight + 1,
         lineGap: 0.4,
-        ellipsis: true,
       })
     y += addressHeight
   }
 
-  const contact = [snapshot.school.phone, snapshot.school.email]
-    .filter((value): value is string => Boolean(value && value.trim()))
-    .join('  •  ')
+  const contact = schoolContact(snapshot)
 
   if (contact) {
+    const contactSize = Math.max(7, style.metaSize - 0.4)
+    const contactHeight = textHeight(
+      state,
+      contact,
+      'regular',
+      contactSize,
+      width,
+      0.4,
+    )
+
     doc
       .font(state.fontRegular)
-      .fontSize(8.4)
+      .fontSize(contactSize)
       .fillColor(COLORS.muted)
       .text(contact, LEFT, y + 1, {
-        width: brandingWidth,
+        width,
         align: 'center',
-        height: 11,
-        ellipsis: true,
+        height: contactHeight + 1,
+        lineGap: 0.4,
       })
-    y += 12
   }
 
-  // Clear separation between the school branding and the pupil details. The
-  // pupil block also has to start below the taller top-right photograph.
-  state.y = Math.max(y + 18, headerTop + PUPIL_PHOTO_HEIGHT + 10)
+  return headerTop + measureHeaderHeight(state, style)
 }
 
-/**
- * Draws an image centred inside a box while preserving its aspect ratio. The
- * bytes are read from private storage through the service; no public URL is
- * ever embedded in the PDF.
- */
 function drawCenteredImage(
   state: RenderState,
   data: Buffer | null | undefined,
@@ -497,11 +1041,6 @@ function drawCenteredImage(
   }
 }
 
-/**
- * Neat, subtly rounded photograph frame. The image is clipped to the frame so
- * a wide or tall upload cannot spill into the school name. When no photograph
- * exists the frame is filled neutrally; no other pupil's image is ever used.
- */
 function drawPupilPhoto(
   state: RenderState,
   data: Buffer | null | undefined,
@@ -545,88 +1084,29 @@ function drawPupilPhoto(
   }
 
   doc.save()
-  doc.roundedRect(x, y, width, height, 3).lineWidth(0.8).strokeColor(COLORS.border).stroke()
+  doc
+    .roundedRect(x, y, width, height, 3)
+    .lineWidth(0.8)
+    .strokeColor(COLORS.border)
+    .stroke()
   doc.restore()
 }
 
-function drawPupilInformation(state: RenderState, startY: number): number {
-  const { doc, snapshot } = state
+function drawPupilInformation(
+  state: RenderState,
+  startY: number,
+  style: ReportStyle,
+): number {
+  const { doc } = state
   const y = startY
-  const blockWidths = [
-    CONTENT_WIDTH * 0.37,
-    CONTENT_WIDTH * 0.34,
-    CONTENT_WIDTH * 0.29,
-  ]
-  const blocks: Array<{
-    rows: Array<[string, string]>
-    /** The first row carries the pupil's name and receives extra prominence. */
-    nameRow?: boolean
-  }> = [
-    {
-      rows: [
-        ['PUPIL NAME', display(snapshot.pupil.fullName)],
-        ['INDEX / ADMISSION NUMBER', display(snapshot.pupil.admissionNumber)],
-        ['CLASS', display(snapshot.class.name)],
-      ],
-      nameRow: true,
-    },
-    {
-      rows: [
-        ['ACADEMIC YEAR', display(snapshot.academicYear.name)],
-        ['TERM', display(snapshot.academicTerm.name)],
-        ['CLASS POSITION', display(snapshot.document.classPositionDisplay)],
-        ['NUMBER ON ROLL', display(snapshot.document.numberOnRoll)],
-      ],
-    },
-    {
-      // EXAMINATION TOTAL used to sit in this block. It was removed from the
-      // pupil-information section; the examination score itself remains in the
-      // academic performance table and in the underlying assessment data.
-      rows: [
-        ['CLOSING DATE', formatDate(snapshot.document.closingDate)],
-        ['REOPENING DATE', formatDate(snapshot.document.reopeningDate)],
-      ],
-    },
-  ]
-
-  const fontSize = PUPIL_INFO_FONT_SIZE
-  const measured = blocks.map((block, blockIndex) => {
-    const width = (blockWidths[blockIndex] ?? CONTENT_WIDTH / 3) - 8
-
-    return block.rows.map(([label, value], rowIndex) => {
-      const labelHeight = doc
-        .font(state.fontBold)
-        .fontSize(fontSize)
-        .heightOfString(label, { width, lineGap: 0.4 })
-      const valueHeight = doc
-        .font(state.fontBold)
-        .fontSize(fontSize)
-        .heightOfString(value, { width, lineGap: 0.4 })
-      const prominence = block.nameRow && rowIndex === 0 ? 3 : 0
-
-      return {
-        label,
-        value,
-        labelHeight,
-        valueHeight,
-        height: labelHeight + valueHeight + 3 + prominence,
-        prominence,
-      }
-    })
-  })
-
-  const naturalHeights = measured.map((rows) =>
-    rows.reduce((sum, row) => sum + row.height, 0),
-  )
-  // Grow with wrapped names or admission numbers instead of clipping them, but
-  // keep a sensible minimum for a two-pupil Nursery roll.
-  const height = Math.max(80, ...naturalHeights)
+  const measured = measurePupilInformation(state, style)
+  const height = measured.height
 
   doc.save()
   doc.strokeColor(COLORS.border).lineWidth(0.8)
   doc.rect(LEFT, y, CONTENT_WIDTH, height).stroke()
-  const firstDivider = LEFT + blockWidths[0]!
-  const secondDivider = firstDivider + blockWidths[1]!
+  const firstDivider = LEFT + measured.widths[0]!
+  const secondDivider = firstDivider + measured.widths[1]!
   doc
     .moveTo(firstDivider, y)
     .lineTo(firstDivider, y + height)
@@ -639,13 +1119,11 @@ function drawPupilInformation(state: RenderState, startY: number): number {
 
   let blockX = LEFT
 
-  measured.forEach((rows, blockIndex) => {
-    const blockWidth = blockWidths[blockIndex] ?? CONTENT_WIDTH / 3
-    const spare = height - (naturalHeights[blockIndex] ?? height)
+  measured.blocks.forEach((rows, blockIndex) => {
+    const blockWidth = measured.widths[blockIndex] ?? CONTENT_WIDTH / 3
+    const spare = height - (measured.naturalHeights[blockIndex] ?? height)
     const extraPerRow = rows.length > 0 ? spare / rows.length : 0
 
-    // A very light tint lifts the pupil-name row without changing the type
-    // size of either the label or the value.
     if (blockIndex === 0 && rows[0]) {
       const nameRowHeight = rows[0].height + extraPerRow
       doc.save()
@@ -664,7 +1142,7 @@ function drawPupilInformation(state: RenderState, startY: number): number {
 
       doc
         .font(state.fontBold)
-        .fontSize(fontSize)
+        .fontSize(style.pupilLabelSize)
         .fillColor(COLORS.muted)
         .text(row.label, blockX + 4, labelY, {
           width: blockWidth - 8,
@@ -673,7 +1151,7 @@ function drawPupilInformation(state: RenderState, startY: number): number {
         })
       doc
         .font(state.fontBold)
-        .fontSize(fontSize)
+        .fontSize(row.valueSize)
         .fillColor(COLORS.ink)
         .text(row.value, blockX + 4, labelY + row.labelHeight + 1, {
           width: blockWidth - 8,
@@ -687,7 +1165,7 @@ function drawPupilInformation(state: RenderState, startY: number): number {
     blockX += blockWidth
   })
 
-  return y + height + 8
+  return y + height + style.sectionGap
 }
 
 function academicColumnWidth(key: AcademicColumnKey): number {
@@ -709,70 +1187,74 @@ function academicColumnX(key: AcademicColumnKey): number {
   return x
 }
 
-function drawAcademicTable(state: RenderState, startY: number): number {
+function drawAcademicTable(
+  state: RenderState,
+  startY: number,
+  style: ReportStyle,
+): number {
   const { doc, snapshot } = state
   let y = startY
 
   doc.save()
   doc.strokeColor(COLORS.border).lineWidth(0.8)
-  doc.rect(LEFT, y, CONTENT_WIDTH, 18).stroke()
+  doc.rect(LEFT, y, CONTENT_WIDTH, style.academicTitleHeight).stroke()
   doc.restore()
   doc
     .font(state.fontBold)
-    .fontSize(10.5)
+    .fontSize(style.sectionHeadingSize)
     .fillColor(COLORS.ink)
-    .text('ACADEMIC PERFORMANCE', LEFT, y + 4.2, {
-      width: CONTENT_WIDTH,
-      align: 'center',
-    })
-  y += 18
+    .text(
+      'ACADEMIC PERFORMANCE',
+      LEFT,
+      y + (style.academicTitleHeight - style.sectionHeadingSize) / 2 + 1,
+      {
+        width: CONTENT_WIDTH,
+        align: 'center',
+        height: style.sectionHeadingSize + 2,
+      },
+    )
+  y += style.academicTitleHeight
 
-  y = drawAcademicColumnHeader(state, y)
+  y = drawAcademicColumnHeader(state, y, style)
 
   if (snapshot.academic.mixedSubjectWeights) {
+    const note =
+      'Per-subject weights are shown beside each score as (weight %).'
+    const noteHeight = textHeight(
+      state,
+      note,
+      'bold',
+      style.metaSize,
+      CONTENT_WIDTH - 6,
+      0.3,
+    )
+
     doc
       .font(state.fontBold)
-      .fontSize(8.6)
+      .fontSize(style.metaSize)
       .fillColor(COLORS.muted)
-      .text(
-        'Per-subject weights are shown beside each score as (weight %).',
-        LEFT + 3,
-        y + 1,
-        { width: CONTENT_WIDTH - 6, height: 11 },
-      )
-    y += 12
+      .text(note, LEFT + 3, y + 1, {
+        width: CONTENT_WIDTH - 6,
+        height: noteHeight + 1,
+      })
+    y += noteHeight + 2
   }
 
   snapshot.academic.subjects.forEach((subject, index) => {
-    const rowHeight = academicRowHeight(state, subject)
-    if (y + rowHeight > BOTTOM) {
-      drawPageFooter(state)
-      newPage(state)
-      drawContinuationHeading(state)
-      doc
-        .font(state.fontBold)
-        .fontSize(10.5)
-        .fillColor(COLORS.ink)
-        .text('ACADEMIC PERFORMANCE (CONTINUED)', LEFT, state.y, {
-          width: CONTENT_WIDTH,
-          align: 'center',
-        })
-      state.y += 16
-      y = drawAcademicColumnHeader(state, state.y)
-    }
-
-    y = drawAcademicRow(state, y, subject, index, rowHeight)
+    const rowHeight = measureAcademicRowHeight(state, style, subject)
+    y = drawAcademicRow(state, y, subject, index, rowHeight, style)
   })
 
-  return y + 8
+  return y + style.sectionGap
 }
 
-function drawAcademicColumnHeader(state: RenderState, startY: number): number {
+function drawAcademicColumnHeader(
+  state: RenderState,
+  startY: number,
+  style: ReportStyle,
+): number {
   const { doc, snapshot } = state
-  // Two compact lines: the horizontal heading and, for score columns, the
-  // weighting in parentheses. The previous header stacked three lines and
-  // forced labels such as CLASS SCORE and the percentage apart.
-  const height = 32
+  const height = style.columnHeaderHeight
   const y = startY
 
   doc.save()
@@ -815,7 +1297,7 @@ function drawAcademicColumnHeader(state: RenderState, startY: number): number {
     const percentage = percentages[column.key]
     doc
       .font(state.fontBold)
-      .fontSize(ACADEMIC_HEADER_FONT_SIZE)
+      .fontSize(style.tableHeaderSize)
       .fillColor(COLORS.ink)
       .text(headings[column.key], x + 2, y + 3.5, {
         width: width - 4,
@@ -828,9 +1310,9 @@ function drawAcademicColumnHeader(state: RenderState, startY: number): number {
     if (percentage) {
       doc
         .font(state.fontBold)
-        .fontSize(ACADEMIC_HEADER_FONT_SIZE)
+        .fontSize(style.tableHeaderSize)
         .fillColor(COLORS.muted)
-        .text(percentage, x + 2, y + 17, {
+        .text(percentage, x + 2, y + height - 13, {
           width: width - 4,
           height: 10,
           align,
@@ -860,33 +1342,13 @@ function academicRowValues(
   }
 }
 
-function academicRowHeight(
-  state: RenderState,
-  subject: SnapshotSubjectRow,
-): number {
-  const { doc, snapshot } = state
-  const values = academicRowValues(snapshot, subject)
-  const textHeights = ACADEMIC_COLUMNS.map((column) =>
-    doc
-      .font(state.fontBold)
-      .fontSize(ACADEMIC_FONT_SIZE)
-      .heightOfString(values[column.key], {
-        width: academicColumnWidth(column.key) - 5,
-        lineGap: 0.4,
-      }),
-  )
-
-  // Measure every cell, not just the subject and remark, so a long grade or a
-  // weighted score that wraps onto a second line cannot be clipped.
-  return Math.max(20, Math.min(80, Math.max(...textHeights) + 5))
-}
-
 function drawAcademicRow(
   state: RenderState,
   startY: number,
   subject: SnapshotSubjectRow,
   index: number,
   height: number,
+  style: ReportStyle,
 ): number {
   const { doc, snapshot } = state
   const y = startY
@@ -915,21 +1377,24 @@ function drawAcademicRow(
 
     doc
       .font(state.fontBold)
-      .fontSize(ACADEMIC_FONT_SIZE)
+      .fontSize(style.tableSize)
       .fillColor(COLORS.ink)
-      .text(values[column.key], x + 2.5, y + 3.5, {
+      .text(values[column.key], x + 2.5, y + style.rowPadding, {
         width: width - 5,
-        height: height - 4.5,
+        height: height - style.rowPadding * 2 + 1,
         align,
-        lineGap: 0.4,
+        lineGap: 0.3,
       })
   }
 
   if (index % 2 === 1) {
-    // Very light banding keeps dense tables readable in print without looking
-    // like a dashboard card.
     doc.save()
-    doc.moveTo(LEFT, y + height).lineTo(RIGHT, y + height).lineWidth(0.35).strokeColor('#cbd5e1').stroke()
+    doc
+      .moveTo(LEFT, y + height)
+      .lineTo(RIGHT, y + height)
+      .lineWidth(0.35)
+      .strokeColor('#cbd5e1')
+      .stroke()
     doc.restore()
   }
 
@@ -945,10 +1410,14 @@ function withWeight(
   return mixed ? `${value} (${weight}%)` : value
 }
 
-function drawSummary(state: RenderState, startY: number): number {
+function drawSummary(
+  state: RenderState,
+  startY: number,
+  style: ReportStyle,
+): number {
   const { doc, snapshot } = state
   const y = startY
-  const height = 38
+  const height = style.summaryHeight
   const width = CONTENT_WIDTH / 4
   const values = [
     snapshot.academic.aggregate.display,
@@ -988,66 +1457,23 @@ function drawSummary(state: RenderState, startY: number): number {
       .text(values[index] ?? 'N/A', x + 3, y + 14, {
         width: width - 6,
         align: 'center',
-        height: 16,
+        height: height - 16,
         ellipsis: true,
       })
   })
 
-  return y + height + 8
-}
-
-function preferredRemarksHeight(
-  state: RenderState,
-  startY: number,
-  gradingH: number,
-): number {
-  const natural = Math.max(100, remarksNaturalHeight(state))
-  const available =
-    BOTTOM - gradingH - SIGNATURE_BLOCK - 12 - startY
-
-  // The original layout expanded the two remark boxes into all available
-  // space, capped at 420pt. A previous revision kept 70% of that height. This
-  // revision targets 30% of that previous height (about 84pt, and roughly a 70%
-  // reduction from the immediately preceding design). The target is a floor so
-  // the boxes stay readable, and the natural content height wins whenever a
-  // written remark needs more room: the panels grow instead of clipping.
-  const previous = Math.min(Math.max(natural, available), 420)
-  const currentDesign = Math.max(58, previous * 0.7)
-  const reduced = Math.max(REMARK_PANEL_TARGET_HEIGHT, currentDesign * 0.3)
-  return Math.max(reduced, remarksNaturalHeight(state) + 4)
-}
-
-function remarksNaturalHeight(state: RenderState): number {
-  const { doc, snapshot } = state
-  const gap = 8
-  const width = (CONTENT_WIDTH - gap) / 2
-  const remarks = safeText(snapshot.remarks.teacher)
-  const attitude = safeText(snapshot.remarks.attitude)
-
-  return Math.max(
-    60,
-    Math.max(
-      doc.font(state.fontRegular).fontSize(8.4).heightOfString(remarks, {
-        width: width - 10,
-        lineGap: 1.2,
-      }),
-      doc.font(state.fontRegular).fontSize(8.4).heightOfString(attitude, {
-        width: width - 10,
-        lineGap: 1.2,
-      }),
-    ) + 26,
-  )
+  return y + height + style.sectionGap
 }
 
 function drawRemarks(
   state: RenderState,
   startY: number,
-  height: number,
+  style: ReportStyle,
 ): number {
   const { doc, snapshot } = state
   const y = startY
-  const gap = 8
-  const width = (CONTENT_WIDTH - gap) / 2
+  const height = measureRemarksHeight(state, style)
+  const width = (CONTENT_WIDTH - REMARK_GAP) / 2
   const remarks = safeText(snapshot.remarks.teacher)
   const attitude = safeText(snapshot.remarks.attitude)
 
@@ -1057,14 +1483,14 @@ function drawRemarks(
   ] as const
 
   boxes.forEach(([label, value], index) => {
-    const x = LEFT + index * (width + gap)
+    const x = LEFT + index * (width + REMARK_GAP)
     doc.save()
     doc.strokeColor(COLORS.border).lineWidth(0.8)
     doc.rect(x, y, width, height).stroke()
     doc.restore()
     doc
       .font(state.fontBold)
-      .fontSize(7.4)
+      .fontSize(style.remarkLabelSize)
       .fillColor(COLORS.ink)
       .text(label, x + 4, y + 3, {
         width: width - 8,
@@ -1073,25 +1499,29 @@ function drawRemarks(
       })
     doc
       .font(state.fontRegular)
-      .fontSize(8.4)
+      .fontSize(style.remarkSize)
       .fillColor(COLORS.ink)
       .text(value, x + 4, y + 14, {
         width: width - 8,
         height: height - 17,
-        lineGap: 1.2,
-        ellipsis: true,
+        lineGap: 1,
       })
   })
 
-  return y + height + 8
+  return y + height + style.sectionGap
 }
 
-function drawSignature(state: RenderState, startY: number): number {
+function drawSignature(
+  state: RenderState,
+  startY: number,
+  style: ReportStyle,
+): number {
   const { doc, snapshot, assets } = state
   const y = startY
+  const height = measureSignatureHeight(state, style)
   const lineWidth = 240
   const lineX = PAGE.width / 2 - lineWidth / 2
-  const lineY = y + 34
+  const lineY = y + signatureLineOffset(style)
 
   if (assets.signature) {
     drawCenteredImage(
@@ -1100,7 +1530,7 @@ function drawSignature(state: RenderState, startY: number): number {
       PAGE.width / 2 - 70,
       y,
       140,
-      32,
+      Math.max(12, lineY - y - 2),
     )
   }
 
@@ -1113,64 +1543,87 @@ function drawSignature(state: RenderState, startY: number): number {
   const designation = safeText(snapshot.document.signatureDesignation ?? null)
 
   if (printedName || designation) {
+    let textY = lineY + 5
+
     if (printedName) {
+      const nameHeight = textHeight(
+        state,
+        printedName,
+        'bold',
+        8.4,
+        lineWidth,
+        0.3,
+      )
+
       doc
         .font(state.fontBold)
         .fontSize(8.4)
         .fillColor(COLORS.ink)
-        .text(printedName, lineX, lineY + 5, {
+        .text(printedName, lineX, textY, {
           width: lineWidth,
           align: 'center',
-          height: 11,
-          ellipsis: true,
+          height: nameHeight + 1,
+          lineGap: 0.3,
         })
+      textY += nameHeight + 1
     }
+
+    const designationText = designation || 'School Administrator'
+    const designationHeight = textHeight(
+      state,
+      designationText,
+      'regular',
+      7.4,
+      lineWidth,
+      0.3,
+    )
 
     doc
       .font(state.fontRegular)
       .fontSize(7.4)
       .fillColor(COLORS.muted)
-      .text(designation || 'School Administrator', lineX, lineY + (printedName ? 17 : 5), {
+      .text(designationText, lineX, textY, {
         width: lineWidth,
         align: 'center',
-        height: 10,
-        ellipsis: true,
+        height: designationHeight + 1,
+        lineGap: 0.3,
       })
-
-    return lineY + (printedName ? 30 : 17)
-  }
-
-  doc
-    .font(state.fontBold)
-    .fontSize(7.4)
-    .fillColor(COLORS.ink)
-    .text(
-      snapshot.document.headteacherLabel || "SCHOOL ADMIN SIGNATURE",
-      lineX,
-      lineY + 5,
-      {
-        width: lineWidth,
-        align: 'center',
-        height: 10,
-        ellipsis: true,
-      },
+  } else {
+    const caption =
+      snapshot.document.headteacherLabel || 'SCHOOL ADMIN SIGNATURE'
+    const captionHeight = textHeight(
+      state,
+      caption,
+      'bold',
+      7.4,
+      lineWidth,
+      0.3,
     )
 
-  return lineY + 18
+    doc
+      .font(state.fontBold)
+      .fontSize(7.4)
+      .fillColor(COLORS.ink)
+      .text(caption, lineX, lineY + 5, {
+        width: lineWidth,
+        align: 'center',
+        height: captionHeight + 1,
+        lineGap: 0.3,
+      })
+  }
+
+  return y + height + style.sectionGap
 }
 
-function gradingHeight(snapshot: ReportSnapshot): number {
-  const bands = snapshot.academic.grading.bands.length
-  const rows = Math.max(1, Math.ceil(bands / 2))
-  return 20 + rows * 13 + 6
-}
-
-function drawGradingScale(state: RenderState, startY: number): number {
-  const { doc, snapshot } = state
+function drawGradingScale(
+  state: RenderState,
+  startY: number,
+  style: ReportStyle,
+): number {
+  const { doc } = state
   const y = startY
-  const bands = snapshot.academic.grading.bands
-  const rows = Math.max(1, Math.ceil(bands.length / 2))
-  const height = 20 + rows * 13 + 6
+  const rows = gradingRows(state, style)
+  const height = measureGradingHeight(state, style)
   const columnWidth = (CONTENT_WIDTH - 10) / 2
 
   doc.save()
@@ -1180,57 +1633,60 @@ function drawGradingScale(state: RenderState, startY: number): number {
 
   doc
     .font(state.fontBold)
-    .fontSize(GRADING_FONT_SIZE)
+    .fontSize(style.gradingSize)
     .fillColor(COLORS.ink)
-    .text('GRADING SCALE:', LEFT + 4, y + 4, {
+    .text('GRADING SCALE:', LEFT + 4, y + 3, {
       width: CONTENT_WIDTH - 8,
       height: 11,
     })
 
-  bands.forEach((band, index) => {
-    const column = index % 2
-    const row = Math.floor(index / 2)
-    const x = LEFT + 4 + column * (columnWidth + 2)
-    const bandY = y + 19 + row * 13
-    const label = `${band.gradeLabel}: ${band.minScore} - ${band.maxScore}`
+  let rowY = y + style.gradingHeader
 
-    doc
-      .font(state.fontBold)
-      .fontSize(GRADING_FONT_SIZE)
-      .fillColor(COLORS.ink)
-      .text(label, x, bandY, {
-        width: columnWidth * 0.55,
-        height: 11,
-      })
-    doc
-      .font(state.fontBold)
-      .fontSize(GRADING_FONT_SIZE)
-      .fillColor(COLORS.muted)
-      .text(band.remark, x + columnWidth * 0.55, bandY, {
-        width: columnWidth * 0.45 - 2,
-        height: 11,
-      })
+  rows.forEach((row) => {
+    row.bands.forEach((band, column) => {
+      const x = LEFT + 4 + column * (columnWidth + 2)
+      const label = `${band.gradeLabel}: ${band.minScore} - ${band.maxScore}`
+
+      doc
+        .font(state.fontBold)
+        .fontSize(style.gradingSize)
+        .fillColor(COLORS.ink)
+        .text(label, x, rowY, {
+          width: columnWidth * 0.55,
+          height: row.height - 2,
+          lineGap: 0.2,
+        })
+      doc
+        .font(state.fontBold)
+        .fontSize(style.gradingSize)
+        .fillColor(COLORS.muted)
+        .text(band.remark, x + columnWidth * 0.55, rowY, {
+          width: columnWidth * 0.45 - 2,
+          height: row.height - 2,
+          lineGap: 0.2,
+        })
+    })
+
+    rowY += row.height
   })
 
   return y + height
 }
 
-function drawPageFooter(state: RenderState): void {
+function drawPageFooter(state: RenderState, style: ReportStyle): void {
   const { doc, snapshot } = state
   const parts = [
     `Generated ${new Date(snapshot.generatedAt).toLocaleString('en-GB')}`,
-    `Page ${state.page}`,
+    'Page 1 of 1',
   ]
 
-  // Draft copies carry the internal review label. Released copies show only
-  // the document metadata: the visible release banner has been removed.
   if (!state.released) {
     parts.unshift(state.label)
   }
 
   doc
     .font(state.fontRegular)
-    .fontSize(6.4)
+    .fontSize(style.footerSize)
     .fillColor(COLORS.muted)
     .text(parts.join('  •  '), LEFT, PAGE.height - 27, {
       width: CONTENT_WIDTH,

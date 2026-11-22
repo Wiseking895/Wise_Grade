@@ -416,10 +416,15 @@ export interface RegisterTeacherResult {
 export interface UpdateTeacherInput {
   firstName?: string
   lastName?: string
-  email?: string
   phone?: string | null
   /** Reassign a class teacher to an existing class in the same school. */
   classId?: string
+}
+
+export interface RestoreTeacherMembershipInput {
+  /** Must match the teacher's current email to prevent a wrong-account restore. */
+  confirmEmail: string
+  reason?: string | null
 }
 
 export interface RemoveTeacherMembershipInput {
@@ -695,7 +700,11 @@ export interface SchoolRepository {
   /**
    * Updates a teacher's editable profile and, for a class teacher, their class
    * assignment. Tenant-scoped and restricted to CLASS_TEACHER/SUBJECT_TEACHER
-   * memberships. Email changes are normalized and uniquely constrained.
+   * memberships.
+   *
+   * The globally shared `User.email` is deliberately NOT editable here: a
+   * school administrator must never be able to change the sign-in identity of a
+   * person who may also belong to another school.
    */
   updateTeacher(
     schoolId: string,
@@ -712,6 +721,19 @@ export interface SchoolRepository {
     schoolId: string,
     membershipId: string,
     input: RemoveTeacherMembershipInput,
+    audit: AuditContext,
+  ): Promise<TeacherRecord>
+
+  /**
+   * Restores a previously suspended teacher membership in this school only.
+   * Never reactivates a deleted or deactivated account, never touches another
+   * school's membership, and never recreates ended class/subject assignments.
+   * All sessions are revoked so the teacher must sign in again.
+   */
+  restoreTeacherMembership(
+    schoolId: string,
+    membershipId: string,
+    input: RestoreTeacherMembershipInput,
     audit: AuditContext,
   ): Promise<TeacherRecord>
   /**

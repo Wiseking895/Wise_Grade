@@ -254,6 +254,109 @@ export interface PlatformAccount {
   updatedAt: string
 }
 
+/** Effective role of an account, derived from the platform flag and memberships. */
+export type PlatformAccountRole =
+  | 'PLATFORM_SUPER_ADMIN'
+  | 'SCHOOL_ADMIN'
+  | 'CLASS_TEACHER'
+  | 'SUBJECT_TEACHER'
+  | 'NO_SCHOOL_MEMBERSHIP'
+
+export type PlatformAccountRoleFilter = 'all' | PlatformAccountRole
+export type PlatformAccountStatusFilter =
+  | 'all'
+  | 'active'
+  | 'suspended'
+  | 'deleted'
+
+export interface PlatformManagedAccount {
+  id: string
+  firstName: string
+  lastName: string
+  email: string
+  role: PlatformAccountRole
+  isPlatformAdmin: boolean
+  isActive: boolean
+  deletedAt: string | null
+  schoolId: string | null
+  schoolName: string | null
+  lastLoginAt: string | null
+  createdAt: string
+}
+
+export interface PlatformAccountFilter {
+  search?: string
+  role?: PlatformAccountRoleFilter
+  status?: PlatformAccountStatusFilter
+  limit?: number
+  offset?: number
+}
+
+export interface PlatformAccountPage {
+  accounts: PlatformManagedAccount[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export type PlatformDeletedAccountStatus = 'ARCHIVED' | 'RESTORED'
+export type PlatformDeletedAccountStatusFilter =
+  | 'all'
+  | PlatformDeletedAccountStatus
+
+export interface PlatformDeletedAccount {
+  id: string
+  userId: string
+  firstName: string
+  lastName: string
+  email: string
+  phone: string | null
+  role: PlatformAccountRole
+  isPlatformAdmin: boolean
+  schoolId: string | null
+  schoolName: string | null
+  memberships: Array<{
+    schoolId: string
+    schoolName: string
+    role: string
+    status: string
+  }>
+  deletedAt: string
+  deletedByName: string | null
+  deletedByEmail: string | null
+  reason: string
+  status: PlatformDeletedAccountStatus
+  restoredAt: string | null
+  restoredByName: string | null
+  restoredByEmail: string | null
+  restoreReason: string | null
+}
+
+export interface PlatformDeletedAccountFilter {
+  search?: string
+  status?: PlatformDeletedAccountStatusFilter
+  limit?: number
+  offset?: number
+}
+
+export interface PlatformDeletedAccountPage {
+  accounts: PlatformDeletedAccount[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface PlatformRestoreResult {
+  account: PlatformDeletedAccount
+  restoredUserId: string
+  /**
+   * School memberships stay suspended after restoration so a restored account
+   * cannot re-enter a school without an explicit membership decision.
+   */
+  membershipsRestored: false
+}
+
+
 export interface PlatformAccountSession {
   id: string
   current: boolean

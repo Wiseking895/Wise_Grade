@@ -1,14 +1,19 @@
 import type { PlatformRepository } from '../../src/platform/repository.js'
 import type {
   PlatformAccount,
+  PlatformAccountPage,
   PlatformAccountSession,
   PlatformAuditContext,
   PlatformAuditEntry,
   PlatformAuditFilter,
   PlatformAuditPage,
+  PlatformDeletedAccount,
+  PlatformDeletedAccountPage,
+  PlatformManagedAccount,
   PlatformMonitoring,
   PlatformMonitoringBucket,
   PlatformOverview,
+  PlatformRestoreResult,
   PlatformSchoolDetail,
   PlatformSchoolFilter,
   PlatformSchoolSummary,
@@ -59,12 +64,21 @@ function schoolSummary(
   }
 }
 
+export interface FakePlatformRepositoryHooks {
+  /** Mirrors the production transaction that archives the auth user. */
+  onAccountDeleted?: (userId: string, deletedAt: Date) => void | Promise<void>
+  /** Mirrors the production transaction that reactivates the auth user. */
+  onAccountRestored?: (userId: string) => void | Promise<void>
+}
+
 /**
  * In-memory platform repository used by HTTP tests. Values are deliberately
  * distinctive so a test can prove the route returns repository data rather than
  * a hardcoded dashboard figure.
  */
 export class FakePlatformRepository implements PlatformRepository {
+  constructor(private readonly hooks: FakePlatformRepositoryHooks = {}) {}
+
   overviewData: PlatformOverview = {
     schools: { total: 3, active: 2, suspended: 1 },
     people: { pupils: 240, teachers: 17, activeUsers: 23 },
@@ -187,6 +201,40 @@ export class FakePlatformRepository implements PlatformRepository {
   revokeOtherCalls = 0
   registrationEnabled = true
 
+  managedAccounts: PlatformManagedAccount[] = [
+    {
+      id: 'platform-1',
+      firstName: 'Platform',
+      lastName: 'Admin',
+      email: 'platform@example.com',
+      role: 'PLATFORM_SUPER_ADMIN',
+      isPlatformAdmin: true,
+      isActive: true,
+      deletedAt: null,
+      schoolId: null,
+      schoolName: null,
+      lastLoginAt: '2026-03-01T07:00:00.000Z',
+      createdAt: '2026-01-01T07:00:00.000Z',
+    },
+    {
+      id: 'teacher-1',
+      firstName: 'Ama',
+      lastName: 'Mensah',
+      email: 'ama@school.test',
+      role: 'CLASS_TEACHER',
+      isPlatformAdmin: false,
+      isActive: true,
+      deletedAt: null,
+      schoolId: 'school-1',
+      schoolName: 'Accra Basic School',
+      lastLoginAt: null,
+      createdAt: '2026-02-01T07:00:00.000Z',
+    },
+  ]
+
+  deletedAccounts: PlatformDeletedAccount[] = []
+  accountSessionsRevoked = 0
+
   async overview(): Promise<PlatformOverview> {
     return this.overviewData
   }
@@ -300,6 +348,308 @@ export class FakePlatformRepository implements PlatformRepository {
     this.settings.updatedAt = new Date().toISOString()
     this.settings.updatedByName = 'Platform Admin'
     return this.settings
+  }
+
+  async listAccounts(filter: {
+    search?: string
+    role?: string
+    status?: string
+    limit?: number
+    offset?: number
+  }): Promise<PlatformAccountPage> {
+    const limit = filter.limit ?? 25
+    const offset = filter.offset ?? 0
+    const search = filter.search?.toLowerCase()
+    const filtered = this.managedAccounts.filter((account) => {
+      // Archived accounts live only in the Deleted Accounts History. Every
+      // other status filter excludes them, matching the Prisma repository.
+      if (filter.status === 'deleted') {
+        if (!account.deletedAt) {
+          return false
+        }
+      } else {
+        if (account.deletedAt) {
+          return false
+        }
+        if (filter.status === 'active' && !account.isActive) {
+          return false
+        }
+        if (filter.status === 'suspended' && account.isActive) {
+          return false
+        }
+      }
+      if (filter.role && filter.role !== 'all' && account.role !== filter.role) {
+        return false
+      }
+      if (!search) return true
+
+      return `${account.firstName} ${account.lastName} ${account.email} ${account.schoolName ?? ''}`
+        .toLowerCase()
+        .includes(search)
+    })
+
+    return {
+      accounts: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+      limit,
+      offset,
+    }
+  }
+
+  async setAccountActive(
+    actorUserId: string,
+    userId: string,
+    isActive: boolean,
+    reason: string | undefined,
+    _audit: PlatformAuditContext,
+  ): Promise<PlatformManagedAccount> {
+    const account = this.managedAccounts.find((item) => item.id === userId)
+
+    if (!account) {
+      throw Object.assign(new Error('Account not found'), { code: 'NOT_FOUND' })
+    }
+
+    if (account.deletedAt) {
+      throw Object.assign(
+        new Error('This account is archived. Restore it before changing its status.'),
+        { code: 'ALREADY_DELETED' },
+      )
+    }
+
+    if (!isActive && userId === actorUserId) {
+      throw Object.assign(
+        new Error('You cannot suspend your own platform account.'),
+        { code: 'SELF_SUSPENSION' },
+      )
+    }
+
+    if (!isActive && account.isPlatformAdmin) {
+      const activeAdmins = this.managedAccounts.filter(
+        (item) =>
+          item.isPlatformAdmin && item.isActive && item.deletedAt === null,
+      )
+
+      if (activeAdmins.length <= 1) {
+        throw Object.assign(
+          new Error('The last active platform administrator cannot be suspended.'),
+          { code: 'LAST_ADMIN' },
+        )
+      }
+    }
+
+    account.isActive = isActive
+
+    if (!isActive) {
+      this.accountSessionsRevoked += 1
+    }
+
+    this.recordedAudits.push({
+      action: isActive ? 'ACCOUNT_ACTIVATED' : 'ACCOUNT_SUSPENDED',
+      userId,
+      reason: reason ?? null,
+    })
+
+    return account
+  }
+
+  async deleteAccount(
+    actorUserId: string,
+    userId: string,
+    reason: string,
+    confirmEmail: string,
+    _audit: PlatformAuditContext,
+  ): Promise<PlatformDeletedAccount> {
+    const account = this.managedAccounts.find((item) => item.id === userId)
+
+    if (!account) {
+      throw Object.assign(new Error('Account not found'), { code: 'NOT_FOUND' })
+    }
+
+    if (userId === actorUserId) {
+      throw Object.assign(
+        new Error('You cannot delete your own platform account.'),
+        { code: 'SELF_DELETION' },
+      )
+    }
+
+    if (account.email.toLowerCase() !== confirmEmail.trim().toLowerCase()) {
+      throw Object.assign(
+        new Error(
+          'The confirmation email does not match the account being deleted.',
+        ),
+        { code: 'CONFIRMATION_MISMATCH', field: 'confirmEmail' },
+      )
+    }
+
+    if (account.deletedAt) {
+      throw Object.assign(new Error('This account is already archived.'), {
+        code: 'ALREADY_DELETED',
+      })
+    }
+
+    if (account.isPlatformAdmin) {
+      const activeAdmins = this.managedAccounts.filter(
+        (item) =>
+          item.isPlatformAdmin && item.isActive && item.deletedAt === null,
+      )
+
+      if (activeAdmins.length <= 1) {
+        throw Object.assign(
+          new Error('The last active platform administrator cannot be deleted.'),
+          { code: 'LAST_ADMIN' },
+        )
+      }
+    }
+
+    const record: PlatformDeletedAccount = {
+      id: `deletion-${this.deletedAccounts.length + 1}`,
+      userId,
+      firstName: account.firstName,
+      lastName: account.lastName,
+      email: account.email,
+      phone: null,
+      role: account.role,
+      isPlatformAdmin: account.isPlatformAdmin,
+      schoolId: account.schoolId,
+      schoolName: account.schoolName,
+      memberships: account.schoolId
+        ? [
+            {
+              schoolId: account.schoolId,
+              schoolName: account.schoolName ?? '',
+              role: account.role,
+              status: 'SUSPENDED',
+            },
+          ]
+        : [],
+      deletedAt: '2026-03-02T10:00:00.000Z',
+      deletedByName: 'Platform Admin',
+      deletedByEmail: 'platform@example.com',
+      reason,
+      status: 'ARCHIVED',
+      restoredAt: null,
+      restoredByName: null,
+      restoredByEmail: null,
+      restoreReason: null,
+    }
+
+    account.deletedAt = record.deletedAt
+    account.isActive = false
+    this.deletedAccounts.unshift(record)
+    this.accountSessionsRevoked += 1
+    this.recordedAudits.push({ action: 'ACCOUNT_DELETED', userId, reason })
+    await this.hooks.onAccountDeleted?.(
+      userId,
+      new Date(record.deletedAt),
+    )
+
+    return record
+  }
+
+  async listDeletedAccounts(filter: {
+    search?: string
+    status?: string
+    limit?: number
+    offset?: number
+  }): Promise<PlatformDeletedAccountPage> {
+    const limit = filter.limit ?? 25
+    const offset = filter.offset ?? 0
+    const search = filter.search?.toLowerCase()
+    const filtered = this.deletedAccounts.filter((record) => {
+      if (
+        filter.status &&
+        filter.status !== 'all' &&
+        record.status !== filter.status
+      ) {
+        return false
+      }
+
+      if (!search) return true
+
+      return `${record.firstName} ${record.lastName} ${record.email} ${record.schoolName ?? ''} ${record.reason}`
+        .toLowerCase()
+        .includes(search)
+    })
+
+    return {
+      accounts: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+      limit,
+      offset,
+    }
+  }
+
+  async restoreDeletedAccount(
+    _actorUserId: string,
+    deletionId: string,
+    reason: string | undefined,
+    confirmEmail: string,
+    _audit: PlatformAuditContext,
+  ): Promise<PlatformRestoreResult> {
+    const record = this.deletedAccounts.find((item) => item.id === deletionId)
+
+    if (!record) {
+      throw Object.assign(new Error('Deletion history not found'), {
+        code: 'NOT_FOUND',
+      })
+    }
+
+    if (record.status !== 'ARCHIVED') {
+      throw Object.assign(
+        new Error('This account has already been restored.'),
+        { code: 'NOT_ARCHIVED' },
+      )
+    }
+
+    if (record.email.toLowerCase() !== confirmEmail.trim().toLowerCase()) {
+      throw Object.assign(
+        new Error('The confirmation email does not match the archived account.'),
+        { code: 'CONFIRMATION_MISMATCH', field: 'confirmEmail' },
+      )
+    }
+
+    const conflict = this.managedAccounts.find(
+      (account) =>
+        account.id !== record.userId &&
+        account.email.toLowerCase() === record.email.toLowerCase(),
+    )
+
+    if (conflict) {
+      throw Object.assign(
+        new Error(
+          'This email address is currently assigned to another account. Resolve the conflict before restoring.',
+        ),
+        { code: 'CONFLICT', field: 'email' },
+      )
+    }
+
+    const account = this.managedAccounts.find(
+      (item) => item.id === record.userId,
+    )
+
+    if (!account) {
+      throw Object.assign(new Error('Account not found'), { code: 'NOT_FOUND' })
+    }
+
+    account.deletedAt = null
+    account.isActive = true
+    record.status = 'RESTORED'
+    record.restoredAt = '2026-03-03T10:00:00.000Z'
+    record.restoredByName = 'Platform Admin'
+    record.restoredByEmail = 'platform@example.com'
+    record.restoreReason = reason ?? null
+    this.recordedAudits.push({
+      action: 'ACCOUNT_RESTORED',
+      userId: record.userId,
+      reason: reason ?? null,
+    })
+    await this.hooks.onAccountRestored?.(record.userId)
+
+    return {
+      account: record,
+      restoredUserId: record.userId,
+      membershipsRestored: false,
+    }
   }
 
   async getAccount(userId: string): Promise<PlatformAccount | null> {

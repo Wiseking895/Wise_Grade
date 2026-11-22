@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import { randomUUID } from 'node:crypto'
 import { env } from '../config/env.js'
 import { HttpError } from '../errors/http-error.js'
+import { noStore } from '../middleware/cache.js'
 import { requireTrustedOrigin } from '../middleware/csrf.js'
 import { createRateLimiter } from '../middleware/rate-limit.js'
 import { createAuthenticate, type AuthContext } from '../middleware/authenticate.js'
@@ -159,6 +160,10 @@ export function createAuthRouter(
   })
 
   const trustedOrigin = requireTrustedOrigin(options.trustedOrigins)
+
+  // Every auth response carries a session, a session hint or account identity.
+  // None of it may be stored by a browser or intermediary cache.
+  router.use(noStore)
 
   async function issueSession(
     userId: string,
@@ -434,8 +439,8 @@ export function createAuthRouter(
         )
       }
 
-      if (!user || !passwordMatches || !user.isActive) {
-        if (user) {
+      if (!user || !passwordMatches || !user.isActive || user.deletedAt) {
+        if (user && !user.deletedAt) {
           await registerFailure(user, now)
         }
 

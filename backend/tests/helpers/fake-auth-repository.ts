@@ -782,6 +782,52 @@ export class FakeAuthRepository implements AuthRepository {
   }
 
   /**
+   * Test helper: mirror the production account-archive write. The user row is
+   * kept, memberships are suspended (never removed) and every session is
+   * revoked. Academic/report/audit data lives outside this fake.
+   */
+  markUserDeleted(userId: string, deletedAt: Date = new Date()): void {
+    const user = this.users.get(userId)
+
+    if (!user) {
+      return
+    }
+
+    user.deletedAt = deletedAt
+    user.isActive = false
+
+    for (const membership of this.memberships.values()) {
+      if (membership.userId === userId) {
+        membership.status = 'SUSPENDED'
+      }
+    }
+
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId && session.revokedAt === null) {
+        session.revokedAt = deletedAt
+      }
+    }
+  }
+
+  /**
+   * Test helper: mirror restoration. The account becomes active again, but no
+   * session is recreated, memberships stay suspended and email verification is
+   * not granted.
+   */
+  markUserRestored(userId: string): void {
+    const user = this.users.get(userId)
+
+    if (!user) {
+      return
+    }
+
+    user.deletedAt = null
+    user.isActive = true
+    user.lockedUntil = null
+    user.failedLoginCount = 0
+  }
+
+  /**
    * Test helper: mirror a revocation or expiry write into the access-code
    * lookup table used by `enterSubjectTeacherAccessCode`.
    */

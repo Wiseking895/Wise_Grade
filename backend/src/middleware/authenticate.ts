@@ -73,7 +73,8 @@ export function createAuthenticate(repository: AuthRepository) {
         !session ||
         session.revokedAt !== null ||
         session.expiresAt <= now ||
-        !session.user.isActive
+        !session.user.isActive ||
+        session.user.deletedAt
       ) {
         throw new HttpError(
           401,
@@ -85,7 +86,7 @@ export function createAuthenticate(repository: AuthRepository) {
 
       const context = await repository.findUserWithMemberships(session.user.id)
 
-      if (!context || !context.user.isActive) {
+      if (!context || !context.user.isActive || context.user.deletedAt) {
         throw new HttpError(
           401,
           'Session is invalid or has expired',

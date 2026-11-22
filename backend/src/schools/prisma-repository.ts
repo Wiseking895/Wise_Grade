@@ -31,6 +31,7 @@ import type {
   RegisterTeacherInput,
   RegisterTeacherResult,
   RemoveTeacherMembershipInput,
+  RestoreTeacherMembershipInput,
   SchoolProfile,
   SchoolRepository,
   SubjectRecord,
@@ -3649,34 +3650,22 @@ export function createPrismaSchoolRepository(): SchoolRepository {
             )
           }
 
-          const nextEmail =
-            input.email === undefined
-              ? membership.user.email
-              : input.email.trim().toLowerCase()
-          const emailChanged = nextEmail !== membership.user.email
-
-          if (emailChanged) {
-            const owner = await tx.user.findFirst({
-              where: {
-                email: nextEmail,
-                NOT: { id: membership.userId },
-              },
-              select: { id: true },
-            })
-
-            if (owner) {
-              throw new HttpError(
-                409,
-                'An account with this email address already exists',
-                [
-                  {
-                    field: 'email',
-                    message: 'This email is already associated with another account',
-                  },
-                ],
-                'email_in_use',
-              )
-            }
+          // Defence in depth: the request schema already rejects an `email`
+          // field, but a direct repository caller must not be able to change a
+          // globally shared sign-in identity either. A school administrator
+          // never owns the account of someone who may belong to another school.
+          if ((input as { email?: unknown }).email !== undefined) {
+            throw new HttpError(
+              403,
+              'School administrators cannot change a teacher’s email address. Contact the platform administrator.',
+              [
+                {
+                  field: 'email',
+                  message: 'Email addresses are managed by the platform administrator',
+                },
+              ],
+              'email_change_forbidden',
+            )
           }
 
           const nextPhone =
@@ -3809,22 +3798,8 @@ export function createPrismaSchoolRepository(): SchoolRepository {
                   ? undefined
                   : normalizeName(input.lastName),
               phone: input.phone === undefined ? undefined : nextPhone,
-              email: emailChanged ? nextEmail : undefined,
-              // A changed address is not trusted until the teacher confirms it.
-              emailVerifiedAt: emailChanged ? null : undefined,
-              emailVerificationRequired: emailChanged ? true : undefined,
             },
           })
-
-          if (emailChanged) {
-            // The old address may still be usable elsewhere. Ending every
-            // session forces the account to re-authenticate with the new
-            // identity and prevents a stale browser from continuing silently.
-            await tx.session.updateMany({
-              where: { userId: membership.userId, revokedAt: null },
-              data: { revokedAt: new Date() },
-            })
-          }
 
           // Assignment rows carry an identity snapshot used by the class
           // workspace and report exports. Keep them consistent with the
@@ -3848,7 +3823,6 @@ export function createPrismaSchoolRepository(): SchoolRepository {
             membership.id,
             {
               userId: membership.userId,
-              emailChanged,
               classId: input.classId ?? null,
             },
           )

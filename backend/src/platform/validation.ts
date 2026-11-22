@@ -169,6 +169,63 @@ export const platformExportQuerySchema = z
   })
   .strict()
 
+const platformAccountRole = z.enum([
+  'PLATFORM_SUPER_ADMIN',
+  'SCHOOL_ADMIN',
+  'CLASS_TEACHER',
+  'SUBJECT_TEACHER',
+  'NO_SCHOOL_MEMBERSHIP',
+])
+
+export const platformAccountListQuerySchema = z
+  .object({
+    search: z.string().trim().max(160).optional(),
+    role: z.union([z.literal('all'), platformAccountRole]).optional(),
+    status: z
+      .enum(['all', 'active', 'suspended', 'deleted'])
+      .optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    offset: z.coerce.number().int().min(0).optional(),
+  })
+  .strict()
+
+export const platformAccountStatusSchema = z
+  .object({
+    isActive: z.boolean(),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict()
+
+export const platformAccountDeleteSchema = z
+  .object({
+    reason: z
+      .string()
+      .trim()
+      .min(5, 'Provide a deletion reason of at least 5 characters')
+      .max(500, 'Reason must be 500 characters or fewer'),
+    /** Typed by the administrator to prevent an accidental destructive click. */
+    confirmEmail: email,
+  })
+  .strict()
+
+export const platformDeletedAccountListQuerySchema = z
+  .object({
+    search: z.string().trim().max(160).optional(),
+    status: z.enum(['all', 'ARCHIVED', 'RESTORED']).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    offset: z.coerce.number().int().min(0).optional(),
+  })
+  .strict()
+
+export const platformAccountRestoreSchema = z
+  .object({
+    reason: z.string().trim().max(500).optional(),
+    /** Typed by the administrator to confirm the specific account. */
+    confirmEmail: email,
+  })
+  .strict()
+
+
 export type PlatformSchoolUpdateInput = z.infer<typeof platformSchoolUpdateSchema>
 export type PlatformSettingsUpdateInput = z.infer<
   typeof platformSettingsUpdateSchema

@@ -15,6 +15,8 @@ export interface UserRecord {
   phone: string | null
   isPlatformAdmin: boolean
   isActive: boolean
+  /** Non-null once the Platform Super Admin archives the account. */
+  deletedAt?: Date | null
   /** Optional MFA state; secrets are never part of this public record. */
   mfaEnabled: boolean
   lockedUntil: Date | null

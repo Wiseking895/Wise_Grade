@@ -421,7 +421,6 @@ export const updateTeacherSchema = z
   .object({
     firstName: personName.optional(),
     lastName: personName.optional(),
-    email: teacherEmail.optional(),
     phone: optionalGhanaMobile,
     classId: uuid.optional(),
   })
@@ -430,13 +429,24 @@ export const updateTeacherSchema = z
     (value) =>
       value.firstName !== undefined ||
       value.lastName !== undefined ||
-      value.email !== undefined ||
       value.phone !== undefined ||
       value.classId !== undefined,
     { message: 'Provide at least one field to update' },
   )
 
 export const removeTeacherMembershipSchema = z
+  .object({
+    confirmEmail: teacherEmail,
+    reason: shortText(500).optional().nullable(),
+  })
+  .strict()
+
+/**
+ * Restoring a suspended teacher membership is a controlled, reversible action.
+ * The administrator must type the teacher's current email address, exactly as
+ * for removal, so a wrong account cannot be reactivated by mistake.
+ */
+export const restoreTeacherMembershipSchema = z
   .object({
     confirmEmail: teacherEmail,
     reason: shortText(500).optional().nullable(),
@@ -487,6 +497,9 @@ export type RegisterTeacherInput = z.infer<typeof registerTeacherSchema>
 export type UpdateTeacherInput = z.infer<typeof updateTeacherSchema>
 export type RemoveTeacherMembershipInput = z.infer<
   typeof removeTeacherMembershipSchema
+>
+export type RestoreTeacherMembershipInput = z.infer<
+  typeof restoreTeacherMembershipSchema
 >
 export type RegisterClassWithTeacherInput = z.infer<
   typeof registerClassWithTeacherSchema

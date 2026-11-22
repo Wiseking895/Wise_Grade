@@ -174,8 +174,16 @@ model User {
   mustChangePassword        Boolean   @default(false)
   passwordChangedAt         DateTime?
 
+  /// Soft-delete marker used by the Platform Super Admin account archive.
+  /// Accounts are never physically deleted, so academic, assessment, report,
+  /// audit and school history keep their relationships. A non-null value means
+  /// the account is archived: it cannot sign in or use an existing session.
+  deletedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  deletedAccounts DeletedAccount[]
 
   memberships             SchoolMembership[]
   sessions                Session[]
@@ -208,6 +216,7 @@ model User {
   @@index([isActive])
   @@index([isPlatformAdmin])
   @@index([lockedUntil])
+  @@index([deletedAt])
 }
 
 model SchoolMembership {
@@ -426,6 +435,56 @@ model AuditLog {
   @@index([schoolId, createdAt])
   @@index([actorUserId, createdAt])
   @@index([action, createdAt])
+}
+
+/// Immutable archive of a soft-deleted platform-managed account.
+///
+/// A row is written once inside the deletion transaction and is never removed
+/// by any dashboard operation. Restoration appends status/actor fields; the
+/// original identity, school association and deletion reason are preserved.
+/// `schoolId` is a scalar snapshot (not a foreign key) so the history survives
+/// even if the tenant record is later archived.
+model DeletedAccount {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// The archived account. Kept for referential integrity; the user row itself
+  /// is never physically deleted.
+  userId String @db.Uuid
+
+  email           String  @db.VarChar(320)
+  firstName       String  @db.VarChar(80)
+  lastName        String  @db.VarChar(80)
+  phone           String? @db.VarChar(32)
+  /// Original effective role: PLATFORM_SUPER_ADMIN, SCHOOL_ADMIN,
+  /// CLASS_TEACHER, SUBJECT_TEACHER or NO_SCHOOL_MEMBERSHIP.
+  role            String  @db.VarChar(40)
+  isPlatformAdmin Boolean @default(false)
+  schoolId        String? @db.Uuid
+  schoolName      String? @db.VarChar(160)
+  /// Full membership snapshot (school, role and status) at deletion time.
+  memberships     Json?
+
+  deletedAt       DateTime @default(now())
+  deletedByUserId String?  @db.Uuid
+  deletedByName   String?  @db.VarChar(160)
+  deletedByEmail  String?  @db.VarChar(320)
+  reason          String   @db.VarChar(500)
+
+  /// ARCHIVED or RESTORED. Only restoration may change this value.
+  status          String   @default("ARCHIVED") @db.VarChar(20)
+  restoredAt      DateTime?
+  restoredByUserId String? @db.Uuid
+  restoredByName  String?  @db.VarChar(160)
+  restoredByEmail String?  @db.VarChar(320)
+  restoreReason   String?  @db.VarChar(500)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, status])
+  @@index([deletedAt])
+  @@index([status])
+  @@index([schoolId])
+  @@index([email])
 }
 
 model Session {

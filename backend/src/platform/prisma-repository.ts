@@ -4,13 +4,18 @@ import { isSchoolIdentityComplete } from '../lib/school-branding.js'
 import type { PlatformRepository } from './repository.js'
 import type {
   PlatformAccount,
+  PlatformAccountPage,
   PlatformAccountSession,
   PlatformAuditEntry,
   PlatformAuditFilter,
   PlatformAuditPage,
+  PlatformDeletedAccount,
+  PlatformDeletedAccountPage,
+  PlatformManagedAccount,
   PlatformMonitoring,
   PlatformMonitoringBucket,
   PlatformOverview,
+  PlatformRestoreResult,
   PlatformSchoolDetail,
   PlatformSchoolFilter,
   PlatformSchoolMember,
@@ -83,6 +88,191 @@ function sortBucket(bucket: PlatformMonitoringBucket): PlatformMonitoringBucket 
   bucket.schools.sort((a, b) => b.count - a.count || a.schoolName.localeCompare(b.schoolName))
   return bucket
 }
+
+const ROLE_PRIORITY: Record<string, number> = {
+  SCHOOL_ADMIN: 3,
+  CLASS_TEACHER: 2,
+  SUBJECT_TEACHER: 1,
+}
+
+type MembershipWithSchool = {
+  id: string
+  schoolId: string
+  role: string
+  status: string
+  joinedAt: Date
+  school: { id: string; name: string }
+}
+
+type UserWithMemberships = {
+  id: string
+  email: string
+  firstName: string
+  lastName: string
+  isPlatformAdmin: boolean
+  isActive: boolean
+  deletedAt: Date | null
+  lastLoginAt: Date | null
+  createdAt: Date
+  memberships: MembershipWithSchool[]
+}
+
+function resolveAccountRole(
+  isPlatformAdmin: boolean,
+  memberships: Array<{ role: string }>,
+): PlatformManagedAccount['role'] {
+  if (isPlatformAdmin) {
+    return 'PLATFORM_SUPER_ADMIN'
+  }
+
+  let best: PlatformManagedAccount['role'] = 'NO_SCHOOL_MEMBERSHIP'
+  let priority = 0
+
+  for (const membership of memberships) {
+    const candidate = ROLE_PRIORITY[membership.role] ?? 0
+
+    if (candidate > priority) {
+      priority = candidate
+      best = membership.role as PlatformManagedAccount['role']
+    }
+  }
+
+  return best
+}
+
+function primaryMembership(
+  memberships: MembershipWithSchool[],
+): MembershipWithSchool | null {
+  return (
+    memberships
+      .slice()
+      .sort(
+        (a, b) =>
+          (ROLE_PRIORITY[b.role] ?? 0) - (ROLE_PRIORITY[a.role] ?? 0) ||
+          a.joinedAt.getTime() - b.joinedAt.getTime(),
+      )[0] ?? null
+  )
+}
+
+function mapManagedAccount(user: UserWithMemberships): PlatformManagedAccount {
+  const primary = primaryMembership(user.memberships)
+
+  return {
+    id: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    email: user.email,
+    role: resolveAccountRole(user.isPlatformAdmin, user.memberships),
+    isPlatformAdmin: user.isPlatformAdmin,
+    isActive: user.isActive,
+    deletedAt: toIso(user.deletedAt),
+    schoolId: primary?.schoolId ?? null,
+    schoolName: primary?.school.name ?? null,
+    lastLoginAt: toIso(user.lastLoginAt),
+    createdAt: user.createdAt.toISOString(),
+  }
+}
+
+function parseMembershipSnapshot(
+  value: unknown,
+): PlatformDeletedAccount['memberships'] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.flatMap((item) => {
+    if (
+      typeof item !== 'object' ||
+      item === null ||
+      typeof (item as { schoolId?: unknown }).schoolId !== 'string' ||
+      typeof (item as { schoolName?: unknown }).schoolName !== 'string' ||
+      typeof (item as { role?: unknown }).role !== 'string' ||
+      typeof (item as { status?: unknown }).status !== 'string'
+    ) {
+      return []
+    }
+
+    const row = item as {
+      schoolId: string
+      schoolName: string
+      role: string
+      status: string
+    }
+
+    return [
+      {
+        schoolId: row.schoolId,
+        schoolName: row.schoolName,
+        role: row.role,
+        status: row.status,
+      },
+    ]
+  })
+}
+
+function mapDeletedAccount(row: {
+  id: string
+  userId: string
+  firstName: string
+  lastName: string
+  email: string
+  phone: string | null
+  role: string
+  isPlatformAdmin: boolean
+  schoolId: string | null
+  schoolName: string | null
+  memberships: unknown
+  deletedAt: Date
+  deletedByName: string | null
+  deletedByEmail: string | null
+  reason: string
+  status: string
+  restoredAt: Date | null
+  restoredByName: string | null
+  restoredByEmail: string | null
+  restoreReason: string | null
+}): PlatformDeletedAccount {
+  return {
+    id: row.id,
+    userId: row.userId,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    email: row.email,
+    phone: row.phone,
+    role: row.role as PlatformDeletedAccount['role'],
+    isPlatformAdmin: row.isPlatformAdmin,
+    schoolId: row.schoolId,
+    schoolName: row.schoolName,
+    memberships: parseMembershipSnapshot(row.memberships),
+    deletedAt: row.deletedAt.toISOString(),
+    deletedByName: row.deletedByName,
+    deletedByEmail: row.deletedByEmail,
+    reason: row.reason,
+    status: row.status === 'RESTORED' ? 'RESTORED' : 'ARCHIVED',
+    restoredAt: toIso(row.restoredAt),
+    restoredByName: row.restoredByName,
+    restoredByEmail: row.restoredByEmail,
+    restoreReason: row.restoreReason,
+  }
+}
+
+function accountError(
+  code:
+    | 'NOT_FOUND'
+    | 'ALREADY_DELETED'
+    | 'ALREADY_RESTORED'
+    | 'SELF_DELETION'
+    | 'SELF_SUSPENSION'
+    | 'LAST_ADMIN'
+    | 'NOT_ARCHIVED'
+    | 'CONFIRMATION_MISMATCH'
+    | 'CONFLICT',
+  message: string,
+  field?: string,
+): Error {
+  return Object.assign(new Error(message), { code, field })
+}
+
 
 interface AuditQueryInput {
   action?: string
@@ -1141,6 +1331,502 @@ export function createPrismaPlatformRepository(): PlatformRepository {
       })
 
       return loadSettings()
+    },
+
+    async listAccounts(filter): Promise<PlatformAccountPage> {
+      const prisma = getPrismaClient()
+      const limit = Math.min(Math.max(filter.limit ?? 25, 1), 100)
+      const offset = Math.max(filter.offset ?? 0, 0)
+      const status = filter.status ?? 'all'
+      const role = filter.role ?? 'all'
+      const where: Prisma.UserWhereInput = {}
+
+      if (status === 'deleted') {
+        where.deletedAt = { not: null }
+      } else {
+        where.deletedAt = null
+
+        if (status === 'active') {
+          where.isActive = true
+        } else if (status === 'suspended') {
+          where.isActive = false
+        }
+      }
+
+      if (role === 'PLATFORM_SUPER_ADMIN') {
+        where.isPlatformAdmin = true
+      } else if (role === 'NO_SCHOOL_MEMBERSHIP') {
+        where.isPlatformAdmin = false
+        where.memberships = { none: {} }
+      } else if (role !== 'all') {
+        where.memberships = {
+          some: {
+            role: role as 'SCHOOL_ADMIN' | 'CLASS_TEACHER' | 'SUBJECT_TEACHER',
+          },
+        }
+      }
+
+      const search = filter.search?.trim()
+
+      if (search) {
+        where.OR = [
+          { firstName: { contains: search, mode: 'insensitive' } },
+          { lastName: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+          {
+            memberships: {
+              some: {
+                school: { name: { contains: search, mode: 'insensitive' } },
+              },
+            },
+          },
+        ]
+      }
+
+      const [rows, total] = await Promise.all([
+        prisma.user.findMany({
+          where,
+          include: {
+            memberships: {
+              include: { school: { select: { id: true, name: true } } },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+          skip: offset,
+        }),
+        prisma.user.count({ where }),
+      ])
+
+      return {
+        accounts: rows.map((row) => mapManagedAccount(row as UserWithMemberships)),
+        total,
+        limit,
+        offset,
+      }
+    },
+
+    async setAccountActive(
+      actorUserId,
+      userId,
+      isActive,
+      reason,
+      audit,
+    ): Promise<PlatformManagedAccount> {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const target = await tx.user.findUnique({
+          where: { id: userId },
+          include: {
+            memberships: {
+              include: { school: { select: { id: true, name: true } } },
+            },
+          },
+        })
+
+        if (!target) {
+          throw accountError('NOT_FOUND', 'Account not found')
+        }
+
+        if (target.deletedAt) {
+          throw accountError(
+            'ALREADY_DELETED',
+            'This account is archived. Restore it before changing its status.',
+          )
+        }
+
+        if (!isActive && target.id === actorUserId) {
+          throw accountError(
+            'SELF_SUSPENSION',
+            'You cannot suspend your own platform account.',
+          )
+        }
+
+        if (!isActive && target.isPlatformAdmin) {
+          const activeAdmins = await tx.user.count({
+            where: { isPlatformAdmin: true, isActive: true, deletedAt: null },
+          })
+
+          if (activeAdmins <= 1) {
+            throw accountError(
+              'LAST_ADMIN',
+              'The last active platform administrator cannot be suspended.',
+            )
+          }
+        }
+
+        const updated = await tx.user.update({
+          where: { id: userId },
+          data: { isActive },
+        })
+
+        let revokedSessions = 0
+
+        if (!isActive) {
+          const revoked = await tx.session.updateMany({
+            where: { userId, revokedAt: null },
+            data: { revokedAt: new Date() },
+          })
+          revokedSessions = revoked.count
+        }
+
+        await tx.auditLog.create({
+          data: {
+            actorUserId,
+            action: isActive ? 'ACCOUNT_ACTIVATED' : 'ACCOUNT_SUSPENDED',
+            entityType: 'User',
+            entityId: userId,
+            metadata: {
+              accountName: `${target.firstName} ${target.lastName}`.trim(),
+              accountEmail: target.email,
+              isPlatformAdmin: target.isPlatformAdmin,
+              reason: reason ?? null,
+              revokedSessions,
+            },
+            ipAddress: audit.ipAddress ?? null,
+            userAgent: audit.userAgent ?? null,
+          },
+        })
+
+        return mapManagedAccount({
+          ...target,
+          isActive: updated.isActive,
+        } as UserWithMemberships)
+      })
+    },
+
+    async deleteAccount(
+      actorUserId,
+      userId,
+      reason,
+      confirmEmail,
+      audit,
+    ): Promise<PlatformDeletedAccount> {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const target = await tx.user.findUnique({
+          where: { id: userId },
+          include: {
+            memberships: {
+              include: { school: { select: { id: true, name: true } } },
+            },
+          },
+        })
+
+        if (!target) {
+          throw accountError('NOT_FOUND', 'Account not found')
+        }
+
+        if (target.id === actorUserId) {
+          throw accountError(
+            'SELF_DELETION',
+            'You cannot delete your own platform account.',
+          )
+        }
+
+        if (target.email.toLowerCase() !== confirmEmail.trim().toLowerCase()) {
+          throw accountError(
+            'CONFIRMATION_MISMATCH',
+            'The confirmation email does not match the account being deleted.',
+            'confirmEmail',
+          )
+        }
+
+        if (target.deletedAt) {
+          throw accountError('ALREADY_DELETED', 'This account is already archived.')
+        }
+
+        const existingHistory = await tx.deletedAccount.findFirst({
+          where: { userId, status: 'ARCHIVED' },
+          select: { id: true },
+        })
+
+        if (existingHistory) {
+          throw accountError(
+            'ALREADY_DELETED',
+            'An active archive record already exists for this account.',
+          )
+        }
+
+        if (target.isPlatformAdmin) {
+          const activeAdmins = await tx.user.count({
+            where: { isPlatformAdmin: true, isActive: true, deletedAt: null },
+          })
+
+          if (activeAdmins <= 1) {
+            throw accountError(
+              'LAST_ADMIN',
+              'The last active platform administrator cannot be deleted.',
+            )
+          }
+        }
+
+        const actor = await tx.user.findUnique({
+          where: { id: actorUserId },
+          select: { firstName: true, lastName: true, email: true },
+        })
+
+        if (!actor) {
+          throw accountError('NOT_FOUND', 'Acting administrator not found')
+        }
+
+        const primary = primaryMembership(
+          target.memberships as MembershipWithSchool[],
+        )
+        const role = resolveAccountRole(target.isPlatformAdmin, target.memberships)
+        const snapshot = target.memberships.map((membership) => ({
+          schoolId: membership.schoolId,
+          schoolName: membership.school.name,
+          role: membership.role,
+          status: membership.status,
+        }))
+        const deletedAt = new Date()
+
+        const history = await tx.deletedAccount.create({
+          data: {
+            userId: target.id,
+            email: target.email,
+            firstName: target.firstName,
+            lastName: target.lastName,
+            phone: target.phone,
+            role,
+            isPlatformAdmin: target.isPlatformAdmin,
+            schoolId: primary?.schoolId ?? null,
+            schoolName: primary?.school.name ?? null,
+            memberships: snapshot as Prisma.InputJsonValue,
+            deletedAt,
+            deletedByUserId: actorUserId,
+            deletedByName: actorName(actor),
+            deletedByEmail: actor.email,
+            reason,
+            status: 'ARCHIVED',
+          },
+        })
+
+        // Soft delete only: the user row and every academic, assessment,
+        // report, audit and school relationship remain intact.
+        await tx.user.update({
+          where: { id: target.id },
+          data: { isActive: false, deletedAt },
+        })
+
+        // Suspending memberships preserves the school relationship while
+        // removing tenant access. Membership rows are never deleted.
+        await tx.schoolMembership.updateMany({
+          where: { userId: target.id },
+          data: { status: 'SUSPENDED' },
+        })
+
+        const revoked = await tx.session.updateMany({
+          where: { userId: target.id, revokedAt: null },
+          data: { revokedAt: deletedAt },
+        })
+
+        await tx.auditLog.create({
+          data: {
+            actorUserId,
+            action: 'ACCOUNT_DELETED',
+            entityType: 'User',
+            entityId: target.id,
+            metadata: {
+              accountName: `${target.firstName} ${target.lastName}`.trim(),
+              accountEmail: target.email,
+              role,
+              schoolId: primary?.schoolId ?? null,
+              schoolName: primary?.school.name ?? null,
+              reason,
+              revokedSessions: revoked.count,
+              historyId: history.id,
+            },
+            ipAddress: audit.ipAddress ?? null,
+            userAgent: audit.userAgent ?? null,
+          },
+        })
+
+        return mapDeletedAccount(history)
+      })
+    },
+
+    async listDeletedAccounts(filter): Promise<PlatformDeletedAccountPage> {
+      const prisma = getPrismaClient()
+      const limit = Math.min(Math.max(filter.limit ?? 25, 1), 100)
+      const offset = Math.max(filter.offset ?? 0, 0)
+      const where: Prisma.DeletedAccountWhereInput = {}
+
+      if (filter.status && filter.status !== 'all') {
+        where.status = filter.status
+      }
+
+      const search = filter.search?.trim()
+
+      if (search) {
+        where.OR = [
+          { firstName: { contains: search, mode: 'insensitive' } },
+          { lastName: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+          { schoolName: { contains: search, mode: 'insensitive' } },
+          { reason: { contains: search, mode: 'insensitive' } },
+        ]
+      }
+
+      const [rows, total] = await Promise.all([
+        prisma.deletedAccount.findMany({
+          where,
+          orderBy: { deletedAt: 'desc' },
+          take: limit,
+          skip: offset,
+        }),
+        prisma.deletedAccount.count({ where }),
+      ])
+
+      return {
+        accounts: rows.map(mapDeletedAccount),
+        total,
+        limit,
+        offset,
+      }
+    },
+
+    async restoreDeletedAccount(
+      actorUserId,
+      deletionId,
+      reason,
+      confirmEmail,
+      audit,
+    ): Promise<PlatformRestoreResult> {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const record = await tx.deletedAccount.findUnique({
+          where: { id: deletionId },
+          include: { user: true },
+        })
+
+        if (!record) {
+          throw accountError('NOT_FOUND', 'Deletion history record not found')
+        }
+
+        if (record.status !== 'ARCHIVED') {
+          throw accountError(
+            'NOT_ARCHIVED',
+            'This account has already been restored.',
+          )
+        }
+
+        if (record.email.toLowerCase() !== confirmEmail.trim().toLowerCase()) {
+          throw accountError(
+            'CONFIRMATION_MISMATCH',
+            'The confirmation email does not match the archived account.',
+            'confirmEmail',
+          )
+        }
+
+        if (!record.user.deletedAt) {
+          throw accountError(
+            'ALREADY_RESTORED',
+            'The account is already active. No restore was performed.',
+          )
+        }
+
+        const emailConflict = await tx.user.findFirst({
+          where: {
+            id: { not: record.userId },
+            email: { equals: record.email, mode: 'insensitive' },
+          },
+          select: { id: true },
+        })
+
+        if (emailConflict) {
+          throw accountError(
+            'CONFLICT',
+            'This email address is currently assigned to another account. Resolve the conflict before restoring.',
+            'email',
+          )
+        }
+
+        if (record.phone) {
+          const phoneConflict = await tx.user.findFirst({
+            where: {
+              id: { not: record.userId },
+              phone: record.phone,
+            },
+            select: { id: true },
+          })
+
+          if (phoneConflict) {
+            throw accountError(
+              'CONFLICT',
+              'This phone number is currently assigned to another account. Resolve the conflict before restoring.',
+              'phone',
+            )
+          }
+        }
+
+        const actor = await tx.user.findUnique({
+          where: { id: actorUserId },
+          select: { firstName: true, lastName: true, email: true },
+        })
+
+        if (!actor) {
+          throw accountError('NOT_FOUND', 'Acting administrator not found')
+        }
+
+        const restoredAt = new Date()
+
+        // The account becomes active again, but its sessions are deliberately
+        // not recreated and memberships stay SUSPENDED. Email verification is
+        // never granted by restoration.
+        await tx.user.update({
+          where: { id: record.userId },
+          data: {
+            deletedAt: null,
+            isActive: true,
+            lockedUntil: null,
+            failedLoginCount: 0,
+          },
+        })
+
+        const updated = await tx.deletedAccount.update({
+          where: { id: record.id },
+          data: {
+            status: 'RESTORED',
+            restoredAt,
+            restoredByUserId: actorUserId,
+            restoredByName: actorName(actor),
+            restoredByEmail: actor.email,
+            restoreReason: reason ?? null,
+          },
+        })
+
+        await tx.auditLog.create({
+          data: {
+            actorUserId,
+            action: 'ACCOUNT_RESTORED',
+            entityType: 'User',
+            entityId: record.userId,
+            metadata: {
+              accountName: `${record.firstName} ${record.lastName}`.trim(),
+              accountEmail: record.email,
+              role: record.role,
+              schoolId: record.schoolId,
+              schoolName: record.schoolName,
+              reason: reason ?? null,
+              historyId: record.id,
+              membershipsRestored: false,
+            },
+            ipAddress: audit.ipAddress ?? null,
+            userAgent: audit.userAgent ?? null,
+          },
+        })
+
+        return {
+          account: mapDeletedAccount(updated),
+          restoredUserId: record.userId,
+          membershipsRestored: false,
+        }
+      })
     },
 
     async getAccount(userId): Promise<PlatformAccount | null> {

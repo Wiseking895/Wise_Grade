@@ -4,7 +4,10 @@ import type {
   PlatformAcademicYearCreateInput,
   PlatformAcademicYearUpdateInput,
   PlatformAccount,
+  PlatformAccountPage,
+  PlatformAccountRoleFilter,
   PlatformAccountSession,
+  PlatformAccountStatusFilter,
   PlatformAuditPage,
   PlatformAuditSource,
   PlatformCalendarApplyInput,
@@ -15,8 +18,11 @@ import type {
   PlatformCalendarTerm,
   PlatformCalendarTermUpdate,
   PlatformCalendarYear,
+  PlatformDeletedAccountPage,
+  PlatformDeletedAccountStatusFilter,
   PlatformMonitoring,
   PlatformOverview,
+  PlatformRestoreResult,
   PlatformSchoolCalendar,
   PlatformSchoolDetail,
   PlatformSchoolStatusFilter,
@@ -102,6 +108,79 @@ export function setPlatformSchoolStatus(
       method: 'POST',
       body: { isActive, reason },
       headers: reauthToken ? { 'X-Platform-Reauth': reauthToken } : undefined,
+    },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Account directory, suspension, deletion and restoration
+// ---------------------------------------------------------------------------
+
+export function listPlatformAccounts(filter: {
+  search?: string
+  role?: PlatformAccountRoleFilter
+  status?: PlatformAccountStatusFilter
+  limit?: number
+  offset?: number
+} = {}) {
+  return apiRequest<PlatformAccountPage>(
+    `/api/platform/accounts${queryString(filter)}`,
+  )
+}
+
+export function setPlatformAccountStatus(
+  userId: string,
+  isActive: boolean,
+  reason: string | undefined,
+  reauthToken: string,
+) {
+  return apiRequest<{ account: import('./types').PlatformManagedAccount }>(
+    `/api/platform/accounts/${userId}/status`,
+    {
+      method: 'POST',
+      body: { isActive, reason },
+      headers: { 'X-Platform-Reauth': reauthToken },
+    },
+  )
+}
+
+export function deletePlatformAccount(
+  userId: string,
+  input: { reason: string; confirmEmail: string },
+  reauthToken: string,
+) {
+  return apiRequest<{ account: import('./types').PlatformDeletedAccount }>(
+    `/api/platform/accounts/${userId}/delete`,
+    {
+      method: 'POST',
+      body: input,
+      headers: { 'X-Platform-Reauth': reauthToken },
+    },
+  )
+}
+
+export function listPlatformDeletedAccounts(filter: {
+  search?: string
+  status?: PlatformDeletedAccountStatusFilter
+  limit?: number
+  offset?: number
+} = {}) {
+  return apiRequest<PlatformDeletedAccountPage>(
+    `/api/platform/accounts/deleted${queryString(filter)}`,
+  )
+}
+
+export function restorePlatformDeletedAccount(
+  deletionId: string,
+  input: { reason?: string; confirmEmail: string },
+  reauthToken: string,
+) {
+  return apiRequest<PlatformRestoreResult>(
+    `/api/platform/accounts/deleted/${deletionId}/restore`,
+    {
+      method: 'POST',
+      body: input,
+      headers: { 'X-Platform-Reauth': reauthToken },
     },
   )
 }

@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArchiveRestore,
   Bell,
   Building2,
   CalendarDays,
@@ -15,6 +16,7 @@ import {
   Settings,
   ShieldCheck,
   UserRound,
+  Users,
   X,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -41,6 +43,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/platform', label: 'Overview', icon: LayoutDashboard, end: true },
       { to: '/platform/schools', label: 'Schools', icon: Building2 },
+      { to: '/platform/accounts', label: 'Accounts', icon: Users },
       { to: '/platform/monitoring', label: 'Academic monitoring', icon: Activity },
       { to: '/platform/health', label: 'Platform health', icon: HeartPulse },
       { to: '/platform/notifications', label: 'Notifications', icon: Bell },
@@ -67,6 +70,11 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/platform/exports', label: 'Data exports', icon: Download },
       { to: '/platform/settings', label: 'Platform settings', icon: Settings },
       { to: '/platform/audit', label: 'Audit logs', icon: FileClock },
+      {
+        to: '/platform/accounts/deleted',
+        label: 'Deleted Accounts History',
+        icon: ArchiveRestore,
+      },
       { to: '/platform/account', label: 'My account', icon: UserRound },
     ],
   },
@@ -80,6 +88,14 @@ const PAGE_HEADINGS: Record<string, { title: string; subtitle: string }> = {
   '/platform/schools': {
     title: 'Schools',
     subtitle: 'Register, inspect and control school tenants',
+  },
+  '/platform/accounts': {
+    title: 'Accounts',
+    subtitle: 'Suspend, delete and review platform-managed accounts',
+  },
+  '/platform/accounts/deleted': {
+    title: 'Deleted Accounts History',
+    subtitle: 'Permanent archive of deleted accounts and their restoration record',
   },
   '/platform/monitoring': {
     title: 'Academic monitoring',

@@ -31,6 +31,8 @@ import NotFoundPage from './pages/NotFoundPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 import PlatformAccountPage from './pages/platform/PlatformAccountPage'
 import PlatformAuditPage from './pages/platform/PlatformAuditPage'
+import PlatformAccountsPage from './pages/platform/PlatformAccountsPage'
+import PlatformDeletedAccountsPage from './pages/platform/PlatformDeletedAccountsPage'
 import PlatformBillingPage from './pages/platform/PlatformBillingPage'
 import PlatformCalendarPage from './pages/platform/PlatformCalendarPage'
 import PlatformExportsPage from './pages/platform/PlatformExportsPage'
@@ -198,6 +200,11 @@ export default function App() {
           >
             <Route index element={<PlatformOverviewPage />} />
             <Route path="schools" element={<PlatformSchoolsPage />} />
+            <Route path="accounts" element={<PlatformAccountsPage />} />
+            <Route
+              path="accounts/deleted"
+              element={<PlatformDeletedAccountsPage />}
+            />
             <Route path="monitoring" element={<PlatformMonitoringPage />} />
             <Route path="health" element={<PlatformHealthPage />} />
             <Route path="notifications" element={<PlatformNotificationsPage />} />
