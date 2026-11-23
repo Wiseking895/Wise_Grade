@@ -22,6 +22,8 @@ const CODE_MESSAGES: Record<string, string> = {
     'Sign-in succeeded, but this browser did not keep the session cookie. Allow cookies for this site and try again. On iPhone or iPad, Safari may block cookies when the app and API are on different sites.',
   session_expired:
     'Your session has expired or was signed out for security. Sign in again to continue.',
+  session_idle_timeout:
+    'You were signed out because there was no activity for 60 seconds. Sign in again to continue.',
   csrf_origin_missing:
     'This request was blocked because the browser did not send its origin. Reload the page and try again.',
   csrf_origin_not_allowed:

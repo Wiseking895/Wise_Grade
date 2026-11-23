@@ -36,7 +36,7 @@ import {
   statusLabel,
   todayInputValue,
 } from '../../lib/format'
-import { useSchool } from '../../schools/use-school'
+import { apiErrorMessage } from '../../lib/api-error-message'
 import {
   archivePupil,
   createPupil,
@@ -57,6 +57,7 @@ import type {
   PupilStatus,
   SchoolClass,
 } from '../../schools/types'
+import { useSchool } from '../../schools/use-school'
 
 const PAGE_SIZE = 25
 
@@ -317,12 +318,31 @@ export default function PupilsPage() {
       }
 
       if (pendingPhoto) {
-        const response = await uploadPupilPhoto(schoolId, savedPupil.id, {
-          mimeType: pendingPhoto.mimeType,
-          base64: pendingPhoto.base64,
-          originalName: pendingPhoto.originalName,
-        })
-        savedPupil = response.pupil
+        try {
+          const response = await uploadPupilPhoto(schoolId, savedPupil.id, {
+            mimeType: pendingPhoto.mimeType,
+            base64: pendingPhoto.base64,
+            originalName: pendingPhoto.originalName,
+          })
+          savedPupil = response.pupil
+        } catch (cause) {
+          // The pupil record itself was saved. Keep the form open in edit mode
+          // so submitting again updates this pupil instead of creating a
+          // duplicate, and keep the prepared photograph for an immediate retry.
+          setEditingPupil(savedPupil)
+          await loadPupils()
+          setFormError(
+            `${
+              editingPupil
+                ? 'The pupil record was updated'
+                : 'The pupil was registered'
+            }, but the photograph could not be uploaded. ${apiErrorMessage(
+              cause,
+              'The upload did not finish. Check your connection and try again.',
+            )} The photograph is still selected; save again to retry.`,
+          )
+          return
+        }
       }
 
       setSuccess(
@@ -378,9 +398,10 @@ export default function PupilsPage() {
       setSuccess('Pupil photograph saved. New reports will use it.')
     } catch (cause) {
       setPhotoError(
-        cause instanceof Error
-          ? cause.message
-          : 'Could not save the pupil photograph.',
+        apiErrorMessage(
+          cause,
+          'Could not save the pupil photograph. Check your connection and try again.',
+        ),
       )
     } finally {
       setPhotoBusy(false)
@@ -1062,6 +1083,17 @@ export default function PupilsPage() {
                 className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
               >
                 {photoError}
+              </p>
+            ) : null}
+
+            {photoBusy ? (
+              <p
+                role="status"
+                aria-live="polite"
+                className="text-xs text-gradely-muted"
+              >
+                Uploading the photograph. Keep this window open until it
+                finishes.
               </p>
             ) : null}
 

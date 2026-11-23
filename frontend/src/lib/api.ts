@@ -92,6 +92,85 @@ export class ApiError extends Error {
   }
 }
 
+export type ApiFailureKind =
+  | 'network'
+  | 'server'
+  | 'auth'
+  | 'forbidden'
+  | 'client'
+
+export interface ApiFailure {
+  kind: ApiFailureKind
+  status: number
+  path: string
+}
+
+const failureListeners = new Set<(failure: ApiFailure) => void>()
+
+/** Subscribes to failures that a global recovery surface may need to show. */
+export function subscribeApiFailures(
+  listener: (failure: ApiFailure) => void,
+): () => void {
+  failureListeners.add(listener)
+  return () => failureListeners.delete(listener)
+}
+
+function classifyFailure(status: number): ApiFailureKind {
+  if (status === 0) return 'network'
+  if (status >= 500) return 'server'
+  if (status === 401) return 'auth'
+  if (status === 403) return 'forbidden'
+  return 'client'
+}
+
+function reportFailure(path: string, status: number): void {
+  const failure: ApiFailure = {
+    kind: classifyFailure(status),
+    status,
+    path,
+  }
+
+  for (const listener of failureListeners) {
+    try {
+      listener(failure)
+    } catch {
+      // A recovery surface must never break the request that reported it.
+    }
+  }
+}
+
+let inFlightMutations = 0
+const busyListeners = new Set<(busy: boolean) => void>()
+
+function notifyBusy(): void {
+  const busy = inFlightMutations > 0
+
+  for (const listener of busyListeners) {
+    try {
+      listener(busy)
+    } catch {
+      // Ignore listener failures.
+    }
+  }
+}
+
+/** True while a save, upload or other state-changing request is in progress. */
+export function hasInFlightMutations(): boolean {
+  return inFlightMutations > 0
+}
+
+/**
+ * Notifies when the number of in-flight state-changing requests crosses zero.
+ * The inactivity guard uses this to avoid signing out in the middle of an
+ * upload or save while still keeping the session's absolute expiry.
+ */
+export function subscribeApiBusy(
+  listener: (busy: boolean) => void,
+): () => void {
+  busyListeners.add(listener)
+  return () => busyListeners.delete(listener)
+}
+
 interface ApiErrorBody {
   error?: {
     message?: string
@@ -104,6 +183,11 @@ interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   body?: unknown
   headers?: Record<string, string>
+  /**
+   * State-changing requests count as busy by default so the idle guard can wait
+   * for them. Background pings opt out.
+   */
+  busy?: boolean
 }
 
 export async function apiRequest<T>(
@@ -116,28 +200,44 @@ export async function apiRequest<T>(
     throw new ApiError(0, API_CONFIGURATION_ERROR)
   }
 
+  const method = options.method ?? 'GET'
+  const countsAsBusy = options.busy !== false && method !== 'GET'
+
+  if (countsAsBusy) {
+    inFlightMutations += 1
+    notifyBusy()
+  }
+
   let response: Response
 
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      method: options.method ?? 'GET',
-      // The API authenticates with an HttpOnly cookie, so every browser call
-      // must opt in to sending credentials.
-      credentials: 'include',
-      headers: {
-        Accept: 'application/json',
-        ...(options.body === undefined
-          ? {}
-          : { 'Content-Type': 'application/json' }),
-        ...options.headers,
-      },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    })
-  } catch {
-    throw new ApiError(
-      0,
-      'Could not reach the Wise Grade API. Check that the backend is running.',
-    )
+    try {
+      response = await fetch(`${API_BASE_URL}${path}`, {
+        method,
+        // The API authenticates with an HttpOnly cookie, so every browser call
+        // must opt in to sending credentials.
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json',
+          ...(options.body === undefined
+            ? {}
+            : { 'Content-Type': 'application/json' }),
+          ...options.headers,
+        },
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      })
+    } catch {
+      reportFailure(path, 0)
+      throw new ApiError(
+        0,
+        'We could not connect to Wise Grade. Check your internet connection and try again.',
+      )
+    }
+  } finally {
+    if (countsAsBusy) {
+      inFlightMutations = Math.max(0, inFlightMutations - 1)
+      notifyBusy()
+    }
   }
 
   const isJson = response.headers
@@ -148,6 +248,7 @@ export async function apiRequest<T>(
     : null
 
   if (!response.ok) {
+    reportFailure(path, response.status)
     throw new ApiError(
       response.status,
       payload?.error?.message ?? `Request failed (${response.status})`,
@@ -182,6 +283,19 @@ export function registerSchoolRequest(
 export function logoutRequest(): Promise<{ message: string }> {
   return apiRequest<{ message: string }>('/api/auth/logout', {
     method: 'POST',
+    busy: false,
+  })
+}
+
+/**
+ * Records genuine activity on the server so the server-side idle window stays
+ * current while the user is working. It does not extend the absolute session
+ * expiry.
+ */
+export function heartbeatRequest(): Promise<{ ok: boolean }> {
+  return apiRequest<{ ok: boolean }>('/api/auth/heartbeat', {
+    method: 'POST',
+    busy: false,
   })
 }
 
@@ -273,9 +387,10 @@ export async function downloadFile(
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     })
   } catch {
+    reportFailure(path, 0)
     throw new ApiError(
       0,
-      'Could not reach the Wise Grade API. Check that the backend is running.',
+      'We could not connect to Wise Grade. Check your internet connection and try again.',
     )
   }
 
@@ -287,6 +402,7 @@ export async function downloadFile(
       ? ((await response.json()) as ApiErrorBody)
       : null
 
+    reportFailure(path, response.status)
     throw new ApiError(
       response.status,
       payload?.error?.message ?? `Request failed (${response.status})`,

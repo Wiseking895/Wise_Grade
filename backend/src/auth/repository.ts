@@ -94,6 +94,8 @@ export interface SessionRecord {
   userId: string
   expiresAt: Date
   revokedAt: Date | null
+  /** Last authenticated request, used to enforce the server-side idle limit. */
+  lastUsedAt: Date
   user: UserRecord
 }
 
@@ -178,6 +180,8 @@ export interface SubjectSessionRecord {
   teacher: SubjectTeacherIdentity
   expiresAt: Date
   revokedAt: Date | null
+  /** Last authenticated request, used to enforce the server-side idle limit. */
+  lastUsedAt: Date
 }
 
 export interface EnterSubjectAccessCodeInput {

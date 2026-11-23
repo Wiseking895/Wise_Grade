@@ -3,6 +3,7 @@ import { Navigate, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { useAuth } from '../auth/use-auth'
 import { useSchool } from '../schools/use-school'
+import AuthRecoveryScreen from './AuthRecoveryScreen'
 
 const AUTH_LOADING_LABEL = 'Checking your session...'
 
@@ -25,11 +26,20 @@ export function SessionLoadingScreen() {
 }
 
 export default function ProtectedRoute({ children }: { children: ReactNode }) {
-  const { status, user } = useAuth()
+  const { status, user, refresh } = useAuth()
   const location = useLocation()
 
   if (status === 'loading') {
     return <SessionLoadingScreen />
+  }
+
+  if (status === 'error') {
+    return (
+      <AuthRecoveryScreen
+        message="We could not confirm your session because Wise Grade could not reach the server. Check your connection and try again."
+        onRetry={refresh}
+      />
+    )
   }
 
   if (status !== 'authenticated') {
@@ -73,11 +83,20 @@ export function PlatformProtectedRoute({
 }: {
   children: ReactNode
 }) {
-  const { status, user } = useAuth()
+  const { status, user, refresh } = useAuth()
   const location = useLocation()
 
   if (status === 'loading') {
     return <SessionLoadingScreen />
+  }
+
+  if (status === 'error') {
+    return (
+      <AuthRecoveryScreen
+        message="We could not confirm your session because Wise Grade could not reach the server. Check your connection and try again."
+        onRetry={refresh}
+      />
+    )
   }
 
   if (status !== 'authenticated') {

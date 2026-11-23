@@ -18,7 +18,7 @@ import { usableMemberships } from '../auth/membership-access.js'
 import type { AuthRepository } from '../auth/repository.js'
 import { clearSessionCookieOptions, sessionCookieOptions, subjectSessionCookieOptions, SESSION_COOKIE_NAME, SUBJECT_SESSION_COOKIE_NAME } from '../auth/session.js'
 import { generateOpaqueToken, hashToken } from '../auth/tokens.js'
-import { createAuthenticateSubjectTeacher } from '../middleware/subject-authenticate.js'
+import { createAuthenticateSubjectTeacher, createAuthenticateEither } from '../middleware/subject-authenticate.js'
 import {
   silentNotifier,
   type PlatformNotifier,
@@ -114,6 +114,7 @@ export function createAuthRouter(
   const router = Router()
   const authenticate = createAuthenticate(repository)
   const authenticateSubject = createAuthenticateSubjectTeacher(repository)
+  const authenticateEither = createAuthenticateEither(repository, authenticate)
   const notifier = options.notifier ?? silentNotifier
   const sessionTtlMinutes = options.sessionTtlMinutes ?? env.AUTH_SESSION_TTL_MINUTES
   const email = options.email ?? new NoopEmailService()
@@ -182,6 +183,13 @@ export function createAuthRouter(
     })
 
     res.cookie(SESSION_COOKIE_NAME, token, sessionCookieOptions(expiresAt))
+    // An account session is the authoritative identity. Drop any stale
+    // restricted subject cookie so it cannot be chosen by mistake on routes
+    // that accept either identity.
+    res.clearCookie(
+      SUBJECT_SESSION_COOKIE_NAME,
+      clearSessionCookieOptions(),
+    )
   }
 
   async function recordAuditSafely(
@@ -594,6 +602,12 @@ export function createAuthRouter(
 
       await repository.revokeSession(auth.sessionId)
       res.clearCookie(SESSION_COOKIE_NAME, clearSessionCookieOptions())
+      // A sign-out clears both identities so a later page load cannot fall back
+      // to an older restricted subject session.
+      res.clearCookie(
+        SUBJECT_SESSION_COOKIE_NAME,
+        clearSessionCookieOptions(),
+      )
 
       res.status(200).json({ data: { message: 'Signed out' } })
     } catch (error) {
@@ -615,6 +629,22 @@ export function createAuthRouter(
       next(error)
     }
   })
+
+  /**
+   * Lightweight activity ping. The session middleware already records activity
+   * on every authenticated request; this endpoint lets an open tab that is
+   * genuinely active (mouse/keyboard/scroll) keep the server-side idle window
+   * current without fetching a full resource. It never extends the absolute
+   * session expiry (`expiresAt`).
+   */
+  router.post(
+    '/heartbeat',
+    trustedOrigin,
+    authenticateEither,
+    (_req, res) => {
+      res.status(200).json({ data: { ok: true } })
+    },
+  )
 
   router.post(
     '/email-verification/confirm',

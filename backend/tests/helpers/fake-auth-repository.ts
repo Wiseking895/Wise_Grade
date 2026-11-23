@@ -373,6 +373,7 @@ export class FakeAuthRepository implements AuthRepository {
       userId: session.userId,
       expiresAt: session.expiresAt,
       revokedAt: session.revokedAt,
+      lastUsedAt: session.lastUsedAt,
       user: { ...user },
     }
   }
@@ -737,6 +738,7 @@ export class FakeAuthRepository implements AuthRepository {
       },
       expiresAt: session.expiresAt,
       revokedAt: session.revokedAt,
+      lastUsedAt: session.lastUsedAt,
     }
   }
 

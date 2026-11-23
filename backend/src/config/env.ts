@@ -134,6 +134,25 @@ const envSchema = z
       .int()
       .positive()
       .default(60),
+    /**
+     * Hard server-side inactivity limit. The frontend warns shortly before it
+     * and signs out at the same moment, but this value is authoritative: a
+     * request whose session has not been used within this window is rejected
+     * even if a client timer was suppressed or a tab was asleep.
+     */
+    AUTH_IDLE_TIMEOUT_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(5)
+      .max(86400)
+      .default(60),
+    /**
+     * Overrides the session cookie SameSite policy. Production defaults to
+     * `none` while the web app and API are on different sites. Once the
+     * same-origin `/api` arrangement is verified, set `lax` to stop relying on
+     * third-party cookies. Local development always defaults to `lax`.
+     */
+    AUTH_COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).optional(),
     CALENDAR_SCHEDULER_ENABLED: z
       .enum(['true', 'false'])
       .default('true')

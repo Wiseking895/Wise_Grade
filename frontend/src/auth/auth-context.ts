@@ -3,6 +3,7 @@ import type {
   AuthSession,
   AuthState,
   RegisterSchoolInput,
+  SessionEndReason,
   SubjectSession,
 } from './types'
 
@@ -20,8 +21,11 @@ export interface AuthContextValue extends AuthState {
   resendEmailVerification(): Promise<string>
   /** Replaces the current password and clears any forced-change flag. */
   changePassword(currentPassword: string, newPassword: string): Promise<void>
-  logout(): Promise<void>
+  logout(reason?: SessionEndReason): Promise<void>
   refresh(): Promise<void>
+  /** Human-readable notice shown after an idle or expired session ends. */
+  sessionNotice: string | null
+  dismissSessionNotice(): void
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null)

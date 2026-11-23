@@ -100,7 +100,9 @@ export interface LoginInput {
   password: string
 }
 
-export type AuthStatus = 'loading' | 'authenticated' | 'anonymous'
+export type AuthStatus = 'loading' | 'authenticated' | 'anonymous' | 'error'
+
+export type SessionEndReason = 'manual' | 'idle' | 'expired'
 
 export interface AuthState {
   status: AuthStatus

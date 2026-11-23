@@ -148,6 +148,7 @@ function mapSubjectSession(session: {
   subjectId: string
   expiresAt: Date
   revokedAt: Date | null
+  lastUsedAt: Date
   assignment: {
     firstName: string
     lastName: string
@@ -189,6 +190,7 @@ function mapSubjectSession(session: {
     },
     expiresAt: session.expiresAt,
     revokedAt: session.revokedAt,
+    lastUsedAt: session.lastUsedAt,
   }
 }
 
@@ -547,6 +549,7 @@ export function createPrismaAuthRepository(): AuthRepository {
         userId: session.userId,
         expiresAt: session.expiresAt,
         revokedAt: session.revokedAt,
+        lastUsedAt: session.lastUsedAt,
         user: mapUser(session.user),
       }
     },

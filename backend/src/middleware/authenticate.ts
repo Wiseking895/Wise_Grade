@@ -6,6 +6,7 @@ import type {
 } from '../auth/repository.js'
 import { usableMemberships } from '../auth/membership-access.js'
 import { hashToken } from '../auth/tokens.js'
+import { env } from '../config/env.js'
 import { HttpError } from '../errors/http-error.js'
 import { parseCookies, SESSION_COOKIE_NAME } from '../lib/cookies.js'
 
@@ -39,13 +40,110 @@ export function extractSessionToken(
   return null
 }
 
+function sessionIdleError(): HttpError {
+  return new HttpError(
+    401,
+    'Your session expired after a period of inactivity',
+    undefined,
+    'session_idle_timeout',
+  )
+}
+
 /**
- * Resolves the session cookie (or Bearer token) into `req.auth`.
+ * Resolves the session cookie (or Bearer token) into an account context.
  *
  * Sessions are opaque, server-side, and stored as hashes. Expired, revoked,
- * unknown, or inactive-user sessions all produce the same generic 401 so
- * clients cannot probe account state.
+ * unknown, inactive-user and idle sessions all produce a generic 401 so clients
+ * cannot probe account state. The idle check is enforced here, on the server,
+ * so a suppressed or throttled browser timer cannot keep a session alive.
  */
+export async function resolveAccountAuth(
+  repository: AuthRepository,
+  req: Request,
+): Promise<AuthContext> {
+  const extracted = extractSessionToken(req)
+
+  if (!extracted) {
+    throw new HttpError(401, 'Authentication required', undefined, 'auth_missing')
+  }
+
+  const session = await repository.findSessionByTokenHash(
+    hashToken(extracted.token),
+  )
+  const now = new Date()
+  const idleTimeoutMs = env.AUTH_IDLE_TIMEOUT_SECONDS * 1000
+
+  if (
+    !session ||
+    session.revokedAt !== null ||
+    session.expiresAt <= now ||
+    !session.user.isActive ||
+    session.user.deletedAt
+  ) {
+    throw new HttpError(
+      401,
+      'Session is invalid or has expired',
+      undefined,
+      'session_expired',
+    )
+  }
+
+  if (
+    !session.lastUsedAt ||
+    now.getTime() - session.lastUsedAt.getTime() >= idleTimeoutMs
+  ) {
+    throw sessionIdleError()
+  }
+
+  const context = await repository.findUserWithMemberships(session.user.id)
+
+  if (!context || !context.user.isActive || context.user.deletedAt) {
+    throw new HttpError(
+      401,
+      'Session is invalid or has expired',
+      undefined,
+      'session_expired',
+    )
+  }
+
+  // Activity tracking must never block or fail a valid request.
+  void repository.touchSession(session.id).catch(() => undefined)
+
+  // A user who still has to replace a temporary password may only reach the
+  // endpoints needed to do so. This closes the direct-API bypass: every
+  // school, report, assessment and billing route authenticates through this
+  // middleware, so none of them can be used before the password changes.
+  if (context.user.mustChangePassword === true) {
+    const path = (req.originalUrl ?? req.path).split('?')[0] ?? ''
+    const allowed =
+      path === '/api/auth/me' ||
+      path === '/api/auth/logout' ||
+      path === '/api/auth/heartbeat' ||
+      path === '/api/auth/change-password' ||
+      path.startsWith('/api/auth/email-verification/')
+
+    if (!allowed) {
+      throw new HttpError(
+        403,
+        'Set a new password before continuing. Your account still uses its temporary password.',
+        undefined,
+        'password_change_required',
+      )
+    }
+  }
+
+  return {
+    user: context.user,
+    // Only memberships that currently grant access are exposed. A user who
+    // belongs to several schools keeps the ones whose school is active; a
+    // suspended school simply disappears from the list instead of leaking
+    // suspension state or disabling the whole account.
+    memberships: usableMemberships(context.memberships),
+    sessionId: session.id,
+    viaCookie: extracted.viaCookie,
+  }
+}
+
 export function createAuthenticate(repository: AuthRepository) {
   return async function authenticate(
     req: Request,
@@ -53,84 +151,7 @@ export function createAuthenticate(repository: AuthRepository) {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const extracted = extractSessionToken(req)
-
-      if (!extracted) {
-        throw new HttpError(
-          401,
-          'Authentication required',
-          undefined,
-          'auth_missing',
-        )
-      }
-
-      const session = await repository.findSessionByTokenHash(
-        hashToken(extracted.token),
-      )
-      const now = new Date()
-
-      if (
-        !session ||
-        session.revokedAt !== null ||
-        session.expiresAt <= now ||
-        !session.user.isActive ||
-        session.user.deletedAt
-      ) {
-        throw new HttpError(
-          401,
-          'Session is invalid or has expired',
-          undefined,
-          'session_expired',
-        )
-      }
-
-      const context = await repository.findUserWithMemberships(session.user.id)
-
-      if (!context || !context.user.isActive || context.user.deletedAt) {
-        throw new HttpError(
-          401,
-          'Session is invalid or has expired',
-          undefined,
-          'session_expired',
-        )
-      }
-
-      // Activity tracking must never block or fail a valid request.
-      void repository.touchSession(session.id).catch(() => undefined)
-
-      // A user who still has to replace a temporary password may only reach the
-      // endpoints needed to do so. This closes the direct-API bypass: every
-      // school, report, assessment and billing route authenticates through this
-      // middleware, so none of them can be used before the password changes.
-      if (context.user.mustChangePassword === true) {
-        const path = (req.originalUrl ?? req.path).split('?')[0] ?? ''
-        const allowed =
-          path === '/api/auth/me' ||
-          path === '/api/auth/logout' ||
-          path === '/api/auth/change-password' ||
-          path.startsWith('/api/auth/email-verification/')
-
-        if (!allowed) {
-          throw new HttpError(
-            403,
-            'Set a new password before continuing. Your account still uses its temporary password.',
-            undefined,
-            'password_change_required',
-          )
-        }
-      }
-
-      req.auth = {
-        user: context.user,
-        // Only memberships that currently grant access are exposed. A user who
-        // belongs to several schools keeps the ones whose school is active; a
-        // suspended school simply disappears from the list instead of leaking
-        // suspension state or disabling the whole account.
-        memberships: usableMemberships(context.memberships),
-        sessionId: session.id,
-        viaCookie: extracted.viaCookie,
-      }
-
+      req.auth = await resolveAccountAuth(repository, req)
       next()
     } catch (error) {
       next(error)

@@ -1,5 +1,10 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthProvider'
+import { useAuth } from './auth/use-auth'
+import AuthIdleGuard from './auth/AuthIdleGuard'
+import AuthRecoveryScreen from './components/AuthRecoveryScreen'
+import GlobalApiErrorBanner from './components/GlobalApiErrorBanner'
+import SessionNoticeBanner from './components/SessionNoticeBanner'
 import DashboardLayout from './components/DashboardLayout'
 import PlatformLayout from './components/PlatformLayout'
 import ProtectedRoute, {
@@ -51,11 +56,26 @@ import ChangePasswordPage from './pages/ChangePasswordPage'
 import VerifyEmailPage from './pages/VerifyEmailPage'
 import { SchoolProvider } from './schools/SchoolProvider'
 
-export default function App() {
+function AppContent() {
+  const { status, refresh } = useAuth()
+
+  if (status === 'error') {
+    return (
+      <>
+        <AuthRecoveryScreen
+          message="We could not load your account because Wise Grade could not reach the server. Check your internet connection and try again."
+          onRetry={refresh}
+        />
+        <GlobalApiErrorBanner />
+        <AuthIdleGuard />
+      </>
+    )
+  }
+
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <Routes>
+    <>
+      <SessionNoticeBanner />
+      <Routes>
           <Route path="/" element={<PlaceholderPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/access-code" element={<AccessCodePage />} />
@@ -220,6 +240,17 @@ export default function App() {
           </Route>
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
+      <GlobalApiErrorBanner />
+      <AuthIdleGuard />
+    </>
+  )
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <AppContent />
       </AuthProvider>
     </BrowserRouter>
   )
