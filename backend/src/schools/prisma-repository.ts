@@ -3980,6 +3980,167 @@ export function createPrismaSchoolRepository(): SchoolRepository {
       })
     },
 
+    async restoreTeacherMembership(
+      schoolId,
+      membershipId: string,
+      input: RestoreTeacherMembershipInput,
+      audit,
+    ): Promise<TeacherRecord> {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const membership = await tx.schoolMembership.findFirst({
+          where: { id: membershipId, schoolId },
+          include: { user: true },
+        })
+
+        if (!membership) {
+          throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+        }
+
+        if (membership.user.isPlatformAdmin) {
+          throw new HttpError(
+            403,
+            'Platform administrator accounts cannot be managed as school teachers',
+            undefined,
+            'platform_admin_target',
+          )
+        }
+
+        if (
+          membership.role !== 'CLASS_TEACHER' &&
+          membership.role !== 'SUBJECT_TEACHER'
+        ) {
+          throw new HttpError(404, 'Teacher not found', undefined, 'teacher_not_found')
+        }
+
+        if (membership.status === 'ACTIVE') {
+          throw new HttpError(
+            409,
+            'This teacher membership is already active',
+            undefined,
+            'teacher_already_active',
+          )
+        }
+
+        // A deactivated or permanently deleted account must go through the
+        // platform-level review instead of being silently revived by a school
+        // administrator.
+        if (!membership.user.isActive || membership.user.deletedAt !== null) {
+          throw new HttpError(
+            409,
+            'This account has been deactivated or deleted and cannot be restored from the school workspace. Contact the platform administrator.',
+            undefined,
+            'account_not_restorable',
+          )
+        }
+
+        if (
+          input.confirmEmail.trim().toLowerCase() !==
+          membership.user.email.toLowerCase()
+        ) {
+          throw new HttpError(
+            400,
+            'The confirmation email does not match this teacher account',
+            [
+              {
+                field: 'confirmEmail',
+                message: 'Type the teacher’s current email address exactly',
+              },
+            ],
+            'email_confirmation_mismatch',
+          )
+        }
+
+        // One membership row exists per (school, user), so a duplicate active
+        // membership cannot normally exist. Re-check anyway so a data repair or
+        // future schema change can never grant two active memberships.
+        const duplicate = await tx.schoolMembership.findFirst({
+          where: {
+            schoolId,
+            userId: membership.userId,
+            status: 'ACTIVE',
+            NOT: { id: membershipId },
+          },
+          select: { id: true },
+        })
+
+        if (duplicate) {
+          throw new HttpError(
+            409,
+            'This user already has an active membership in this school',
+            undefined,
+            'membership_conflict',
+          )
+        }
+
+        // Restoration deliberately does not recreate ended class or subject
+        // assignments: the administrator reassigns the teacher explicitly. If
+        // an assignment somehow survived, ensure it does not collide with a
+        // class that has since gained another active class teacher.
+        const activeClassAssignments = await tx.classTeacherAssignment.findMany({
+          where: { schoolId, membershipId, endedAt: null },
+          select: { id: true, classId: true },
+        })
+
+        for (const assignment of activeClassAssignments) {
+          const conflict = await tx.classTeacherAssignment.findFirst({
+            where: {
+              schoolId,
+              classId: assignment.classId,
+              endedAt: null,
+              NOT: { membershipId },
+            },
+            select: { id: true },
+          })
+
+          if (conflict) {
+            throw new HttpError(
+              409,
+              'This class already has an active class teacher. Resolve the assignment before restoring access.',
+              undefined,
+              'class_teacher_conflict',
+            )
+          }
+        }
+
+        const now = new Date()
+        const restored = await tx.schoolMembership.update({
+          where: { id: membershipId },
+          data: { status: 'ACTIVE' },
+          include: { user: true },
+        })
+
+        // Sessions from before the removal may still exist. Revoke every one so
+        // restoration requires a fresh credential check instead of silently
+        // reviving an old browser session.
+        await tx.session.updateMany({
+          where: { userId: membership.userId, revokedAt: null },
+          data: { revokedAt: now },
+        })
+
+        await recordAudit(
+          tx,
+          schoolId,
+          audit,
+          'TEACHER_MEMBERSHIP_RESTORED',
+          'SchoolMembership',
+          membership.id,
+          {
+            userId: membership.userId,
+            email: membership.user.email,
+            reason: input.reason?.trim() || null,
+            restoredByMembershipId: audit.actorMembershipId ?? null,
+            restoredAt: now.toISOString(),
+            // Ended assignments stay ended; the administrator must reassign.
+            recreatedAssignments: false,
+          },
+        )
+
+        return mapTeacher(restored)
+      })
+    },
+
     async listTeacherAssignments(schoolId) {
       const prisma = getPrismaClient()
       const [classTeachers, subjectTeachers] = await Promise.all([

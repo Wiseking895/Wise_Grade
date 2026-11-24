@@ -382,7 +382,6 @@ export interface ClassRegistrationResult {
 export interface UpdateTeacherInput {
   firstName?: string
   lastName?: string
-  email?: string
   phone?: string | null
   /** Reassign a class teacher to another existing class in this school. */
   classId?: string
@@ -390,13 +389,14 @@ export interface UpdateTeacherInput {
 
 export interface UpdateTeacherResult {
   teacher: Teacher
-  /** True when the normalized email address actually changed. */
-  emailChanged: boolean
-  /** Dispatch outcome of the new-address verification message. */
-  emailVerification: OnboardingEmailStatus
 }
 
 export interface RemoveTeacherResult {
+  teacher: Teacher
+  message: string
+}
+
+export interface RestoreTeacherResult {
   teacher: Teacher
   message: string
 }

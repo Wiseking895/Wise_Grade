@@ -1,4 +1,4 @@
-import { Mail, Pencil, Plus, Trash2, UserPlus } from 'lucide-react'
+import { Mail, Pencil, Plus, RotateCcw, Trash2, UserPlus } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import FormField from '../../components/FormField'
 import {
@@ -22,6 +22,7 @@ import {
   registerClassWithTeacher,
   removeTeacherMembership,
   resendTeacherCredentials,
+  restoreTeacherMembership,
   updateTeacher,
 } from '../../schools/api'
 import {
@@ -61,7 +62,6 @@ const EMPTY_REGISTER: RegisterFormState = {
 interface EditFormState {
   firstName: string
   lastName: string
-  email: string
   phone: string
   classId: string
 }
@@ -69,7 +69,6 @@ interface EditFormState {
 const EMPTY_EDIT: EditFormState = {
   firstName: '',
   lastName: '',
-  email: '',
   phone: '',
   classId: '',
 }
@@ -126,27 +125,6 @@ function onboardingMessage(
 }
 
 /**
- * Reports the real outcome of the email-change verification message. The
- * address changes immediately, but it is not trusted until the teacher confirms
- * the link, so "not sent" must never be presented as success.
- */
-function emailVerificationMessage(
-  teacherName: string,
-  email: string,
-  status: OnboardingEmailStatus,
-): string {
-  if (status === 'sent') {
-    return `${teacherName}'s profile was updated. The verification email to ${email} was accepted by the mail server; the address stays unverified until the link is confirmed. Delivery to the inbox cannot be confirmed here.`
-  }
-
-  if (status === 'queued') {
-    return `${teacherName}'s profile was updated. The verification email to ${email} is queued for delivery. If it does not arrive, use Resend verification from the teacher account.`
-  }
-
-  return `${teacherName}'s profile was updated, but the verification email to ${email} could not be sent. The new address remains unverified. Use Resend verification before relying on it.`
-}
-
-/**
  * School administrators register a class together with its class teacher.
  * Everything else on this page is read-only: subjects and pupils belong to the
  * class teacher, and subject teachers are invited from the class page.
@@ -185,6 +163,12 @@ export default function TeachersPage() {
   const [removeReason, setRemoveReason] = useState('')
   const [removeError, setRemoveError] = useState<string | null>(null)
   const [removeBusy, setRemoveBusy] = useState(false)
+
+  const [restoring, setRestoring] = useState<Teacher | null>(null)
+  const [restoreEmail, setRestoreEmail] = useState('')
+  const [restoreReason, setRestoreReason] = useState('')
+  const [restoreError, setRestoreError] = useState<string | null>(null)
+  const [restoreBusy, setRestoreBusy] = useState(false)
 
   const load = useCallback(async () => {
     if (!schoolId) return
@@ -330,7 +314,6 @@ export default function TeachersPage() {
     setEditForm({
       firstName: teacher.firstName,
       lastName: teacher.lastName,
-      email: teacher.email,
       phone: teacher.phone ?? '',
       classId:
         teacher.role === 'CLASS_TEACHER'
@@ -349,7 +332,6 @@ export default function TeachersPage() {
     const input: UpdateTeacherInput = {
       firstName: editForm.firstName.trim(),
       lastName: editForm.lastName.trim(),
-      email: editForm.email.trim(),
       phone: editForm.phone.trim() || null,
     }
 
@@ -373,15 +355,7 @@ export default function TeachersPage() {
       )
       const name = `${result.teacher.firstName} ${result.teacher.lastName}`
 
-      setSuccess(
-        result.emailChanged
-          ? emailVerificationMessage(
-              name,
-              result.teacher.email,
-              result.emailVerification,
-            )
-          : `${name}'s profile was updated.`,
-      )
+      setSuccess(`${name}'s profile was updated.`)
       setEditing(null)
       setEditForm(EMPTY_EDIT)
       await load()
@@ -432,6 +406,44 @@ export default function TeachersPage() {
       )
     } finally {
       setRemoveBusy(false)
+    }
+  }
+
+  function openRestore(teacher: Teacher) {
+    setRestoring(teacher)
+    setRestoreEmail('')
+    setRestoreReason('')
+    setRestoreError(null)
+  }
+
+  async function submitRestore(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (!schoolId || !restoring || restoreBusy) return
+
+    setRestoreBusy(true)
+    setRestoreError(null)
+
+    try {
+      const result = await restoreTeacherMembership(
+        schoolId,
+        restoring.membershipId,
+        {
+          confirmEmail: restoreEmail.trim(),
+          reason: restoreReason.trim() || null,
+        },
+      )
+      setSuccess(
+        `${restoring.firstName} ${restoring.lastName}: ${result.message}`,
+      )
+      setRestoring(null)
+      await load()
+    } catch (cause) {
+      setRestoreError(
+        apiErrorMessage(cause, 'Could not restore this teacher’s access.'),
+      )
+    } finally {
+      setRestoreBusy(false)
     }
   }
 
@@ -584,11 +596,13 @@ export default function TeachersPage() {
                   Teacher accounts
                 </h2>
                 <p className="mt-1 text-sm text-gradely-muted">
-                  Edit a teacher&apos;s name, email, phone number or class
-                  assignment. Removing access suspends only this school&apos;s
-                  membership: the account, academic records and any access to
-                  another school are preserved. Passwords are never shown or set
-                  here.
+                  Edit a teacher&apos;s name, phone number or class assignment.
+                  Email addresses are the account&apos;s global sign-in
+                  identity and can only be changed by the platform
+                  administrator. Removing access suspends only this
+                  school&apos;s membership: the account, academic records and
+                  any access to another school are preserved, and access can be
+                  restored here later. Passwords are never shown or set here.
                 </p>
 
                 {teachers.length === 0 ? (
@@ -653,7 +667,20 @@ export default function TeachersPage() {
                                 Remove access
                               </Button>
                             </div>
-                          ) : null}
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => openRestore(teacher)}
+                            >
+                              <RotateCcw
+                                aria-hidden="true"
+                                className="size-3.5"
+                              />
+                              Restore access
+                            </Button>
+                          )}
                         </li>
                       )
                     })}
@@ -672,7 +699,7 @@ export default function TeachersPage() {
             ? `Edit ${editing.firstName} ${editing.lastName}`
             : 'Edit teacher'
         }
-        description="Changes apply immediately. A new email address must be verified by the teacher before it is trusted. No password field is shown because administrators cannot set or view passwords."
+        description="Changes apply immediately. The sign-in email address is managed by the platform administrator and cannot be changed here. No password field is shown because administrators cannot set or view passwords."
         onClose={() => {
           if (!editBusy) setEditing(null)
         }}
@@ -710,15 +737,10 @@ export default function TeachersPage() {
           <FormField
             label="Email address"
             type="email"
-            value={editForm.email}
-            onChange={(event) =>
-              setEditForm((current) => ({
-                ...current,
-                email: event.target.value,
-              }))
-            }
-            hint="Changing this address signs the teacher out and sends a verification link to the new address."
-            required
+            value={editing?.email ?? ''}
+            readOnly
+            disabled
+            hint="The global sign-in address. Contact the platform administrator to change it."
           />
           <FormField
             label="Mobile number (optional)"
@@ -793,8 +815,7 @@ export default function TeachersPage() {
               loading={editBusy}
               disabled={
                 editForm.firstName.trim() === '' ||
-                editForm.lastName.trim() === '' ||
-                editForm.email.trim() === ''
+                editForm.lastName.trim() === ''
               }
             >
               <Pencil aria-hidden="true" className="size-4" />
@@ -870,6 +891,76 @@ export default function TeachersPage() {
             >
               <Trash2 aria-hidden="true" className="size-4" />
               Remove access
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={restoring !== null}
+        title={
+          restoring
+            ? `Restore ${restoring.firstName} ${restoring.lastName}'s access?`
+            : 'Restore teacher access'
+        }
+        description="This reactivates the teacher's membership in this school only. It does not recreate ended class or subject assignments, and it does not grant access to any other school. A deleted or deactivated account cannot be restored here."
+        onClose={() => {
+          if (!restoreBusy) setRestoring(null)
+        }}
+      >
+        <form
+          onSubmit={(event) => void submitRestore(event)}
+          className="space-y-4"
+        >
+          <p className="rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-3 text-sm leading-relaxed text-sky-900">
+            The teacher will have to sign in again. To confirm, type the
+            teacher&apos;s current email address exactly.
+          </p>
+          <FormField
+            label="Teacher email address"
+            type="email"
+            value={restoreEmail}
+            onChange={(event) => setRestoreEmail(event.target.value)}
+            placeholder={restoring?.email ?? ''}
+            required
+          />
+          <FormField
+            label="Reason (optional)"
+            value={restoreReason}
+            onChange={(event) => setRestoreReason(event.target.value)}
+            maxLength={500}
+            hint="Stored in the audit trail for this school."
+          />
+
+          {restoreError ? (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+            >
+              {restoreError}
+            </div>
+          ) : null}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setRestoring(null)}
+              disabled={restoreBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              loading={restoreBusy}
+              disabled={
+                !restoring ||
+                restoreEmail.trim().toLowerCase() !==
+                  restoring.email.trim().toLowerCase()
+              }
+            >
+              <RotateCcw aria-hidden="true" className="size-4" />
+              Restore access
             </Button>
           </div>
         </form>

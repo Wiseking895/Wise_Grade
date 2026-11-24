@@ -143,6 +143,7 @@ describe('Platform Super Admin dashboard HTTP routes', () => {
           currency: 'GHS',
         },
       })
+      expect(response.headers['cache-control']).toBe('no-store')
     })
   })
 

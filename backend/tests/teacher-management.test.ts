@@ -4,7 +4,6 @@ import { createApp } from '../src/app.js'
 import {
   registrationBody,
   TEST_ORIGIN,
-  TEST_PASSWORD,
 } from './helpers/auth-fixtures.js'
 import { CaptureEmailService } from './helpers/capture-email-service.js'
 import { FakeAuthRepository } from './helpers/fake-auth-repository.js'
@@ -180,79 +179,85 @@ describe('administrator teacher management', () => {
       .send(body)
   }
 
-  it('normalizes a changed email, marks it unverified and reports dispatch', async () => {
+  function restoreTeacher(
+    membershipId: string,
+    body: Record<string, unknown>,
+    schoolId = ctx.schoolId,
+  ) {
+    return ctx.admin
+      .post(`/api/schools/${schoolId}/teachers/${membershipId}/restore`)
+      .set('Origin', TEST_ORIGIN)
+      .send(body)
+  }
+
+  it('edits permitted teacher fields without changing the sign-in email', async () => {
     const teacher = await registerClassTeacher()
     ctx.email.messages.length = 0
 
     const response = await patchTeacher(teacher.teacher.membershipId, {
       firstName: ' Ama ',
       lastName: 'Owusu',
-      email: ' New.Address@GreenValley.test ',
+      phone: '+233241234567',
     })
 
     expect(response.status).toBe(200)
-    expect(response.body.data).toMatchObject({
-      emailChanged: true,
-      emailVerification: 'sent',
-      teacher: {
-        firstName: 'Ama',
-        lastName: 'Owusu',
-        email: 'new.address@greenvalley.test',
-      },
+    expect(response.body.data.teacher).toMatchObject({
+      firstName: 'Ama',
+      lastName: 'Owusu',
+      email: teacher.teacher.email,
+      phone: '+233241234567',
     })
     expect(JSON.stringify(response.body)).not.toMatch(
       /password|temporaryPassword|token/i,
     )
 
-    const verification = ctx.email.last('email-change-verification')
-    expect(verification?.to).toBe('new.address@greenvalley.test')
-    expect(verification?.data.previousEmail).toBe(teacher.teacher.email)
-    expect(String(verification?.data.verificationUrl)).toContain('token=')
-
-    const account = ctx.auth.getUserSnapshot('new.address@greenvalley.test')
-    expect(account?.emailVerificationRequired).toBe(true)
-    expect(account?.emailVerifiedAt).toBeNull()
+    // The global identity is untouched and no email-change message is sent.
+    expect(ctx.auth.getUserSnapshot(teacher.teacher.email)?.email).toBe(
+      teacher.teacher.email,
+    )
+    expect(ctx.email.all('email-change-verification')).toHaveLength(0)
   })
 
-  it('reports a failed verification email without pretending the address is verified', async () => {
+  it('rejects a direct request that tries to change a teacher email', async () => {
     const teacher = await registerClassTeacher()
     ctx.email.messages.length = 0
-    ctx.email.failNextSend = true
 
     const response = await patchTeacher(teacher.teacher.membershipId, {
-      email: 'unverified@greenvalley.test',
+      email: 'attacker@greenvalley.test',
     })
 
-    expect(response.status).toBe(200)
-    expect(response.body.data.emailChanged).toBe(true)
-    expect(response.body.data.emailVerification).toBe('not_sent')
-    expect(ctx.email.last('email-change-verification')).toBeUndefined()
-
-    const account = ctx.auth.getUserSnapshot('unverified@greenvalley.test')
-    expect(account?.emailVerificationRequired).toBe(true)
-    expect(account?.emailVerifiedAt).toBeNull()
-    expect(JSON.stringify(response.body)).not.toContain('token=')
-  })
-
-  it('rejects an email already owned by another account without changing the teacher', async () => {
-    const teacher = await registerClassTeacher()
-    await ctx.auth.createUser({
-      email: 'taken@greenvalley.test',
-      password: TEST_PASSWORD,
-    })
-
-    const response = await patchTeacher(teacher.teacher.membershipId, {
-      email: 'TAKEN@greenvalley.test',
-    })
-
-    expect(response.status).toBe(409)
-    expect(response.body.error.code).toBe('email_in_use')
+    expect(response.status).toBe(400)
+    expect(response.body.error.code).toBe('email_change_forbidden')
     expect(response.body.error.details).toEqual([
       expect.objectContaining({ field: 'email' }),
     ])
+
+    // Neither the account nor any verification state changed.
+    expect(ctx.auth.getUserSnapshot(teacher.teacher.email)?.email).toBe(
+      teacher.teacher.email,
+    )
     expect(
-      ctx.auth.getUserSnapshot(teacher.teacher.email)?.email,
-    ).toBe(teacher.teacher.email)
+      ctx.auth.getUserSnapshot('attacker@greenvalley.test'),
+    ).toBeUndefined()
+    expect(ctx.email.all('email-change-verification')).toHaveLength(0)
+  })
+
+  it('cannot bypass the restriction by mixing a permitted field with an email', async () => {
+    const teacher = await registerClassTeacher()
+
+    const response = await patchTeacher(teacher.teacher.membershipId, {
+      firstName: 'Changed',
+      email: 'mixed@greenvalley.test',
+    })
+
+    expect(response.status).toBe(400)
+    expect(response.body.error.code).toBe('email_change_forbidden')
+    expect(
+      ctx.auth.getUserSnapshot(teacher.teacher.email)?.firstName,
+    ).toBe('Ama')
+    expect(
+      ctx.auth.getUserSnapshot('mixed@greenvalley.test'),
+    ).toBeUndefined()
   })
 
   it('rejects a cross-school membership id for both edit and removal', async () => {
@@ -376,5 +381,135 @@ describe('administrator teacher management', () => {
 
     expect(response.status).toBe(409)
     expect(response.body.error.code).toBe('teacher_inactive')
+  })
+
+  it('restores a suspended membership in this school only and audits the actor', async () => {
+    const teacher = await registerClassTeacher()
+    const otherSchoolId = await createSecondSchool()
+    const otherMembershipId = await ctx.auth.addMembership(
+      teacher.teacher.userId,
+      otherSchoolId,
+      'CLASS_TEACHER',
+    )
+
+    await deleteTeacher(teacher.teacher.membershipId, {
+      confirmEmail: teacher.teacher.email,
+    })
+
+    const response = await restoreTeacher(teacher.teacher.membershipId, {
+      confirmEmail: teacher.teacher.email.toUpperCase(),
+      reason: 'Teacher returned',
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.body.data.teacher.status).toBe('ACTIVE')
+    expect(response.body.data.message).toMatch(/this school only/i)
+    expect(
+      ctx.auth.getMembershipById(teacher.teacher.membershipId)?.status,
+    ).toBe('ACTIVE')
+
+    // The other school is untouched.
+    expect(
+      ctx.auth
+        .listMembershipsForSchool(otherSchoolId)
+        .find((membership) => membership.id === otherMembershipId)?.status,
+    ).toBe('ACTIVE')
+
+    // Restoration is audited with the acting membership and timestamp.
+    const audit = ctx.schools.audits.find(
+      (entry) => entry.action === 'TEACHER_MEMBERSHIP_RESTORED',
+    )
+    expect(audit).toBeDefined()
+    expect(audit?.metadata).toMatchObject({
+      userId: teacher.teacher.userId,
+      reason: 'Teacher returned',
+      recreatedAssignments: false,
+    })
+
+    // Ended class assignments are not silently recreated.
+    const assignments = await ctx.schools.listTeacherAssignments(ctx.schoolId)
+    expect(
+      assignments.classTeachers.some(
+        (assignment) =>
+          assignment.membershipId === teacher.teacher.membershipId,
+      ),
+    ).toBe(false)
+  })
+
+  it('requires the exact current email before restoring access', async () => {
+    const teacher = await registerClassTeacher()
+    await deleteTeacher(teacher.teacher.membershipId, {
+      confirmEmail: teacher.teacher.email,
+    })
+
+    const response = await restoreTeacher(teacher.teacher.membershipId, {
+      confirmEmail: 'wrong@greenvalley.test',
+    })
+
+    expect(response.status).toBe(400)
+    expect(response.body.error.code).toBe('email_confirmation_mismatch')
+    expect(
+      ctx.auth.getMembershipById(teacher.teacher.membershipId)?.status,
+    ).toBe('SUSPENDED')
+  })
+
+  it('rejects restoring a membership that is already active', async () => {
+    const teacher = await registerClassTeacher()
+
+    const response = await restoreTeacher(teacher.teacher.membershipId, {
+      confirmEmail: teacher.teacher.email,
+    })
+
+    expect(response.status).toBe(409)
+    expect(response.body.error.code).toBe('teacher_already_active')
+  })
+
+  it('never allows the teacher directory to be cached', async () => {
+    await registerClassTeacher()
+
+    const response = await ctx.admin
+      .get(`/api/schools/${ctx.schoolId}/teachers`)
+      .set('Origin', TEST_ORIGIN)
+
+    expect(response.status).toBe(200)
+    expect(response.headers['cache-control']).toBe('no-store')
+  })
+
+  it('rejects a cross-school membership id when restoring', async () => {
+    const teacher = await registerClassTeacher()
+    const otherSchoolId = await createSecondSchool()
+    const otherMembershipId = await ctx.auth.addMembership(
+      teacher.teacher.userId,
+      otherSchoolId,
+      'CLASS_TEACHER',
+    )
+
+    const response = await restoreTeacher(otherMembershipId, {
+      confirmEmail: teacher.teacher.email,
+    })
+
+    expect(response.status).toBe(404)
+    expect(response.body.error.code).toBe('teacher_not_found')
+    expect(
+      ctx.auth.getMembershipById(otherMembershipId)?.status,
+    ).toBe('ACTIVE')
+  })
+
+  it('refuses to restore a deleted account without platform review', async () => {
+    const teacher = await registerClassTeacher()
+    await deleteTeacher(teacher.teacher.membershipId, {
+      confirmEmail: teacher.teacher.email,
+    })
+    ctx.auth.markUserDeleted(teacher.teacher.userId)
+
+    const response = await restoreTeacher(teacher.teacher.membershipId, {
+      confirmEmail: teacher.teacher.email,
+    })
+
+    expect(response.status).toBe(409)
+    expect(response.body.error.code).toBe('account_not_restorable')
+    expect(
+      ctx.auth.getMembershipById(teacher.teacher.membershipId)?.status,
+    ).toBe('SUSPENDED')
   })
 })

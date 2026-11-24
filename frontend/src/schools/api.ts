@@ -33,6 +33,7 @@ import type {
   UpdateTeacherInput,
   UpdateTeacherResult,
   RemoveTeacherResult,
+  RestoreTeacherResult,
 } from './types'
 
 function schoolPath(schoolId: string, suffix = ''): string {
@@ -328,9 +329,9 @@ export function registerTeacher(
 }
 
 /**
- * Edits a teacher's profile without ever setting or returning a password. When
- * the email changes, the backend applies it, requires re-verification and
- * reports whether the verification message was sent, queued or not sent.
+ * Edits a teacher's permitted profile fields without ever setting or returning
+ * a password. The globally shared email address is intentionally not editable
+ * from the school workspace; only a platform administrator can change it.
  */
 export function updateTeacher(
   schoolId: string,
@@ -356,6 +357,22 @@ export function removeTeacherMembership(
   return apiRequest<RemoveTeacherResult>(
     schoolPath(schoolId, `/teachers/${encodeURIComponent(membershipId)}`),
     { method: 'DELETE', body: input },
+  )
+}
+
+/**
+ * Restores a previously removed teacher membership in this school only. The
+ * confirmation email must match the account and the account must not be
+ * deleted or deactivated. Ended assignments are not recreated automatically.
+ */
+export function restoreTeacherMembership(
+  schoolId: string,
+  membershipId: string,
+  input: { confirmEmail: string; reason?: string | null },
+) {
+  return apiRequest<RestoreTeacherResult>(
+    schoolPath(schoolId, `/teachers/${encodeURIComponent(membershipId)}/restore`),
+    { method: 'POST', body: input },
   )
 }
 

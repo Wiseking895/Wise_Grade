@@ -204,6 +204,16 @@ describe('GET /api/auth/me', () => {
     expect(response.body.data.memberships[0].role).toBe('SCHOOL_ADMIN')
   })
 
+  it('is never cacheable by a browser or intermediary cache', async () => {
+    const agent = request.agent(app)
+    await register(app, agent)
+
+    const response = await agent.get('/api/auth/me')
+
+    expect(response.status).toBe(200)
+    expect(response.headers['cache-control']).toBe('no-store')
+  })
+
   it('accepts a Bearer token as an alternative to the cookie', async () => {
     await register(app)
     const user = repository.getUserSnapshot('ada@example.com')

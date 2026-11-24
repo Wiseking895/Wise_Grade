@@ -106,7 +106,7 @@ describe('administrator teacher edit and removal', () => {
     assert.match(page, /updateTeacher\(/)
     assert.match(page, /removeTeacherMembership\(/)
     assert.match(page, /Remove access/)
-    assert.match(page, /academic records and any access to/)
+    assert.match(page, /academic records and[\s\S]{0,40}any access to/)
     assert.match(page, /administrators cannot set or view passwords/)
     assert.doesNotMatch(page, /type="password"/)
     assert.doesNotMatch(page, /temporaryPassword/)
@@ -124,12 +124,27 @@ describe('administrator teacher edit and removal', () => {
     assert.match(api, /confirmEmail: string/)
   })
 
-  it('carries the dispatch outcome into the success message', async () => {
+  it('does not expose an editable email field to the school administrator', async () => {
     const page = await source('../src/pages/dashboard/TeachersPage.tsx')
 
-    assert.match(page, /result\.emailChanged/)
-    assert.match(page, /result\.emailVerification/)
-    assert.match(page, /emailVerificationMessage\(/)
-    assert.match(page, /verification email to .* could not be sent/)
+    // The edit modal shows the email read-only and never sends it.
+    assert.doesNotMatch(page, /editForm\.email/)
+    assert.match(page, /value=\{editing\?\.email \?\? ''\}/)
+    assert.match(page, /readOnly/)
+    assert.match(page, /platform administrator/i)
+  })
+
+  it('exposes a controlled restore action for removed teachers', async () => {
+    const page = await source('../src/pages/dashboard/TeachersPage.tsx')
+    const api = await source('../src/schools/api.ts')
+
+    assert.match(page, /restoreTeacherMembership\(/)
+    assert.match(page, /Restore access/)
+    assert.match(page, /membership in this school only/i)
+    assert.match(
+      api,
+      /\/teachers\/\$\{encodeURIComponent\(membershipId\)\}\/restore/,
+    )
+    assert.match(api, /method: 'POST'/)
   })
 })
