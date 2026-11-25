@@ -379,6 +379,7 @@ model AcademicTerm {
   @@unique([academicYearId, sequence])
   @@index([schoolId, isCurrent])
   @@index([schoolId, status])
+  @@index([schoolId, datesConfirmedAt])
   @@index([academicYearId])
 }
 
