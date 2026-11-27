@@ -90,6 +90,7 @@ async function registerSchool(
     email: overrides.email,
   })
   schools.seedDefaults(schoolId, adminUserId)
+  schools.setSessionDates(schoolId, '2020-01-01', '2999-12-31')
 
   return { app, auth, schools, admin, schoolId, adminUserId }
 }

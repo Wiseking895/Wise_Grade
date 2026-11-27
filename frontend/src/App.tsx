@@ -23,6 +23,7 @@ import AttendancePage from './pages/dashboard/AttendancePage'
 import AttitudePage from './pages/dashboard/AttitudePage'
 import DashboardOverviewPage from './pages/dashboard/DashboardOverviewPage'
 import PupilsPage from './pages/dashboard/PupilsPage'
+import PupilDuplicatesPage from './pages/dashboard/PupilDuplicatesPage'
 import TeacherRemarksPage from './pages/dashboard/TeacherRemarksPage'
 import ReportCardPage from './pages/dashboard/ReportCardPage'
 import ReportsPage from './pages/dashboard/ReportsPage'
@@ -54,6 +55,9 @@ import RegisterSchoolPage from './pages/RegisterSchoolPage'
 import AccessCodePage from './pages/AccessCodePage'
 import ChangePasswordPage from './pages/ChangePasswordPage'
 import VerifyEmailPage from './pages/VerifyEmailPage'
+import ForgotPasswordPage from './pages/ForgotPasswordPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
+import SchoolSessionSettingsPage from './pages/dashboard/SchoolSessionSettingsPage'
 import { SchoolProvider } from './schools/SchoolProvider'
 
 function AppContent() {
@@ -81,6 +85,8 @@ function AppContent() {
           <Route path="/access-code" element={<AccessCodePage />} />
           <Route path="/verify-email" element={<VerifyEmailPage />} />
           <Route path="/change-password" element={<ChangePasswordPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="/register" element={<RegisterSchoolPage />} />
           <Route
             path="/dashboard"
@@ -98,6 +104,14 @@ function AppContent() {
               element={
                 <SchoolAdminRoute>
                   <SchoolProfilePage />
+                </SchoolAdminRoute>
+              }
+            />
+            <Route
+              path="session-settings"
+              element={
+                <SchoolAdminRoute>
+                  <SchoolSessionSettingsPage />
                 </SchoolAdminRoute>
               }
             />
@@ -127,6 +141,14 @@ function AppContent() {
                 <ClassTeacherRoute>
                   <PupilsPage />
                 </ClassTeacherRoute>
+              }
+            />
+            <Route
+              path="pupil-duplicates"
+              element={
+                <SchoolAdminRoute>
+                  <PupilDuplicatesPage />
+                </SchoolAdminRoute>
               }
             />
             <Route

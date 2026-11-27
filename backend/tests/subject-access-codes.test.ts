@@ -9,6 +9,12 @@ import { FakeSchoolRepository } from './helpers/fake-school-repository.js'
 
 const TEACHER_PASSWORD = 'InitialPass123'
 
+function daysFromNow(days: number): string {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10)
+}
+
 interface IssuedInvitation {
   id: string
   code: string
@@ -79,6 +85,8 @@ describe('subject teacher access codes', () => {
       email: 'admin@access-codes.test',
     })
     schools.seedDefaults(schoolId, registration.body.data.user.id as string)
+    // A configured, still-open session is required before codes can be issued.
+    schools.setSessionDates(schoolId, daysFromNow(-30), daysFromNow(30))
 
     const classRegistration = await admin
       .post(`/api/schools/${schoolId}/classes/register`)
@@ -175,7 +183,7 @@ describe('subject teacher access codes', () => {
     expect(upperCaseEntry.status).toBe(200)
   })
 
-  it('sets a seven-day expiry and rejects the code afterwards', async () => {
+  it('keeps a code valid past seven days and expires it at the school closing date', async () => {
     const invitation = await assignSubject(classTeacher)
 
     const list = await classTeacher.get(
@@ -187,16 +195,46 @@ describe('subject teacher access codes', () => {
     ).find((item) => item.id === invitation.id)
 
     expect(listed?.status).toBe('PENDING')
+    // The stored expiry follows the closing date (30 days out), not a 7-day
+    // offset from creation.
     const ttlHours =
       (new Date(listed!.expiresAt).getTime() - Date.now()) / (60 * 60 * 1000)
-    expect(ttlHours).toBeGreaterThan(7 * 24 - 1)
-    expect(ttlHours).toBeLessThanOrEqual(7 * 24)
+    expect(ttlHours).toBeGreaterThan(7 * 24)
 
-    schools.expireInvitation(invitation.id)
+    // The code still works more than seven days after it was created, because
+    // the school session remains open.
+    const entered = await enterCode(request.agent(app), invitation.code)
+    expect(entered.status).toBe(200)
 
+    // Bringing the closing date forward invalidates existing non-revoked codes.
+    schools.setSessionDates(schoolId, daysFromNow(-30), daysFromNow(-1))
     const expired = await enterCode(request.agent(app), invitation.code)
     expect(expired.status).toBe(401)
-    expect(expired.body.error.message).toMatch(/invalid, has expired, or has been revoked/i)
+
+    // Extending the closing date again restores validity without regenerating.
+    schools.setSessionDates(schoolId, daysFromNow(-30), daysFromNow(30))
+    const restored = await enterCode(request.agent(app), invitation.code)
+    expect(restored.status).toBe(200)
+  })
+
+  it('refuses to issue a code when no closing date is configured', async () => {
+    schools.setSessionDates(schoolId, null, null)
+
+    const response = await classTeacher
+      .post(`/api/schools/${schoolId}/classes/${classId}/subjects`)
+      .set('Origin', TEST_ORIGIN)
+      .send({
+        name: 'Mathematics',
+        subjectTeacher: {
+          firstName: 'Subject',
+          lastName: 'Teacher',
+          email: 'subject@access-codes.test',
+          phone: null,
+        },
+      })
+
+    expect(response.status).toBe(409)
+    expect(response.body.error.code).toBe('SCHOOL_SESSION_NOT_CONFIGURED')
   })
 
   it('rejects an invalid or revoked code', async () => {

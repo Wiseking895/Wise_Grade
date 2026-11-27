@@ -76,6 +76,17 @@ export const schoolLogoUploadBodySchema = z
   .object({ logo: schoolLogoUploadSchema })
   .strict()
 
+export const schoolSessionSettingsSchema = z
+  .object({
+    reopeningDate: dateString,
+    closingDate: dateString,
+  })
+  .strict()
+  .refine((value) => value.closingDate > value.reopeningDate, {
+    message: 'The closing date must be later than the reopening date',
+    path: ['closingDate'],
+  })
+
 export const academicYearSchema = z
   .object({
     name: shortText(80).min(2, 'Name must be at least 2 characters'),
@@ -182,6 +193,9 @@ export const createPupilSchema = z
     classId: optionalUuid,
     academicYearId: optionalUuid,
     startedOn: dateString.optional(),
+    // Sent only after the explicit "different pupils" confirmation.
+    confirmDifferentPupil: z.boolean().optional(),
+    duplicateOfPupilId: optionalUuid,
   })
   .strict()
   .refine(
@@ -189,6 +203,14 @@ export const createPupilSchema = z
     {
       message: 'Class and academic year must be supplied together',
       path: ['classId'],
+    },
+  )
+  .refine(
+    (value) =>
+      !value.confirmDifferentPupil || Boolean(value.duplicateOfPupilId),
+    {
+      message: 'The existing pupil must be identified before confirming',
+      path: ['duplicateOfPupilId'],
     },
   )
 
@@ -205,11 +227,55 @@ export const updatePupilSchema = z
     // Archiving must use the dedicated endpoint so enrollment history and the
     // current-class pointer are updated together.
     status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+    confirmDifferentPupil: z.boolean().optional(),
+    duplicateOfPupilId: optionalUuid,
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, {
     message: 'Provide at least one field to update',
   })
+  .refine(
+    (value) =>
+      !value.confirmDifferentPupil || Boolean(value.duplicateOfPupilId),
+    {
+      message: 'The existing pupil must be identified before confirming',
+      path: ['duplicateOfPupilId'],
+    },
+  )
+
+export const pupilDuplicateQuerySchema = z
+  .object({
+    category: z
+      .enum(['DEFINITE', 'NAME_CONFLICT', 'ADMISSION_CONFLICT'])
+      .optional(),
+    q: optionalText(120),
+  })
+  .strict()
+
+export const pupilDuplicateDecisionSchema = z
+  .object({
+    primaryPupilId: uuid,
+    duplicatePupilId: uuid,
+    decision: z.enum(['DIFFERENT', 'SAME']),
+    note: optionalText(500),
+  })
+  .strict()
+
+export const pupilMergePreviewSchema = z
+  .object({
+    primaryPupilId: uuid,
+    duplicatePupilId: uuid,
+  })
+  .strict()
+
+export const pupilMergeSchema = z
+  .object({
+    primaryPupilId: uuid,
+    duplicatePupilId: uuid,
+    confirm: z.literal(true),
+    note: optionalText(500),
+  })
+  .strict()
 
 export const movePupilSchema = z
   .object({

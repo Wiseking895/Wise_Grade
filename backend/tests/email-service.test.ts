@@ -271,6 +271,16 @@ const sampleData: { [K in EmailTemplateName]: EmailDataMap[K] } = {
     expiredAt: '25 November 2026 at 10:00 UTC',
     accessCodeUrl: 'https://wisegrade.app/access-code',
   },
+  'password-reset': {
+    firstName: 'Ada',
+    resetUrl: `https://wisegrade.app/reset-password?token=${VERIFICATION_TOKEN}`,
+    expiresAt: '27 November 2026 at 10:00 UTC',
+    expiryMinutes: 30,
+  },
+  'password-changed': {
+    firstName: 'Ada',
+    loginUrl: 'https://wisegrade.app/login',
+  },
   'smtp-test': {
     recipientName: 'Ada',
     sentAt: '19 November 2026 at 09:00 UTC',

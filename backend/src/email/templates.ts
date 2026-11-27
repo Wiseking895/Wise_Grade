@@ -17,6 +17,8 @@ export type EmailTemplateName =
   | 'subject-assignment'
   | 'subject-code-replaced'
   | 'subject-code-expired'
+  | 'password-reset'
+  | 'password-changed'
   | 'smtp-test'
 
 export interface EmailDataMap {
@@ -86,6 +88,16 @@ export interface EmailDataMap {
     subjectName: string
     expiredAt: string
     accessCodeUrl: string
+  }
+  'password-reset': {
+    firstName: string
+    resetUrl: string
+    expiresAt: string
+    expiryMinutes: number
+  }
+  'password-changed': {
+    firstName: string
+    loginUrl: string
   }
   'smtp-test': {
     recipientName: string
@@ -424,6 +436,45 @@ Ask the class teacher responsible for ${payload.className} to generate a replace
 Enter a replacement code: ${payload.accessCodeUrl}`,
       })
       return { subject: `Your ${PRODUCT_NAME} access code has expired`, ...result }
+    }
+
+    case 'password-reset': {
+      const payload = data as EmailDataMap['password-reset']
+      const result = layout({
+        preheader: `Reset your ${PRODUCT_NAME} password.`,
+        heading: 'Reset your password',
+        intro: `Hello ${payload.firstName}, we received a request to reset the password for your ${PRODUCT_NAME} account.`,
+        bodyHtml: `${actionButton('Reset password', payload.resetUrl)}
+          <p style="margin:0 0 18px 0;font-size:14px;line-height:1.65;color:${BRAND.text};">This link is valid for ${payload.expiryMinutes} minutes and expires on ${escapeHtml(payload.expiresAt)}. It can only be used once.</p>
+          ${warningBox('If you did not request a password reset, you can safely ignore this email. Your password will not change.')}
+          <p style="margin:0 0 8px 0;font-size:12px;line-height:1.6;color:${BRAND.muted};">If the button does not work, copy this address into your browser:</p>
+          <p style="margin:0 0 16px 0;font-size:12px;line-height:1.6;word-break:break-all;color:${BRAND.blue};">${escapeHtml(payload.resetUrl)}</p>`,
+        bodyText: `Hello ${payload.firstName}, we received a request to reset the password for your ${PRODUCT_NAME} account.
+
+Reset your password: ${payload.resetUrl}
+
+This link is valid for ${payload.expiryMinutes} minutes and expires on ${payload.expiresAt}. It can only be used once.
+
+If you did not request a password reset, you can safely ignore this email. Your password will not change.`,
+      })
+      return { subject: `Reset your ${PRODUCT_NAME} password`, ...result }
+    }
+
+    case 'password-changed': {
+      const payload = data as EmailDataMap['password-changed']
+      const result = layout({
+        preheader: `Your ${PRODUCT_NAME} password was changed.`,
+        heading: 'Your password was changed',
+        intro: `Hello ${payload.firstName}, the password for your ${PRODUCT_NAME} account was changed successfully.`,
+        bodyHtml: `${actionButton('Sign in to WiseGrade', payload.loginUrl)}
+          ${warningBox('If you did not make this change, contact your school administrator immediately.')}`,
+        bodyText: `Hello ${payload.firstName}, the password for your ${PRODUCT_NAME} account was changed successfully.
+
+Sign in: ${payload.loginUrl}
+
+If you did not make this change, contact your school administrator immediately.`,
+      })
+      return { subject: `Your ${PRODUCT_NAME} password was changed`, ...result }
     }
 
     case 'smtp-test': {

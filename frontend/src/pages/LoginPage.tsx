@@ -183,6 +183,15 @@ export default function LoginPage() {
           onChange={(event) => updateField('password', event.target.value)}
         />
 
+        <div className="flex justify-end">
+          <Link
+            to="/forgot-password"
+            className="text-sm font-semibold text-gradely-navy underline decoration-gradely-blue/40 underline-offset-2 hover:text-gradely-blue"
+          >
+            Forgot Password?
+          </Link>
+        </div>
+
         <button
           type="submit"
           disabled={submitting}

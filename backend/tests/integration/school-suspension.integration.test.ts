@@ -100,6 +100,12 @@ describe.skipIf(!runIntegration)('School suspension integration', () => {
       where: { id: userId },
       data: { emailVerifiedAt: new Date(), emailVerificationRequired: false },
     })
+    // Subject-teacher access-code entry requires a configured, still-open
+    // session (a school closing date).
+    await prisma.school.update({
+      where: { id: schoolId },
+      data: { closingDate: new Date('2099-12-31T00:00:00.000Z') },
+    })
 
     return { agent, schoolId, userId, email }
   }

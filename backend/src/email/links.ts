@@ -11,6 +11,10 @@ export function verificationUrl(token: string): string {
   return frontendUrl(`/verify-email?token=${encodeURIComponent(token)}`)
 }
 
+export function resetPasswordUrl(token: string): string {
+  return frontendUrl(`/reset-password?token=${encodeURIComponent(token)}`)
+}
+
 export function dashboardUrl(): string {
   return frontendUrl('/dashboard')
 }

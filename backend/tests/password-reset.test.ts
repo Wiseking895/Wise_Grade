@@ -107,7 +107,8 @@ describe('password reset', () => {
 
     expect(first.status).toBe(200)
     expect(second.status).toBe(400)
-    expect(second.body.error.message).toContain('invalid or has expired')
+    expect(second.body.error.code).toBe('password_reset_used')
+    expect(second.body.error.message).toContain('already been used')
   })
 
   it('rejects an expired token', async () => {

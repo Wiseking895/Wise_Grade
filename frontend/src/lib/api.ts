@@ -77,18 +77,26 @@ export class ApiError extends Error {
    * lets a screen distinguish causes that share an HTTP status.
    */
   readonly code: string | null
+  /**
+   * Structured payload for flows that need more than a message, such as the
+   * existing pupil returned with a duplicate conflict. Separate from `details`
+   * so form field errors keep their existing shape.
+   */
+  readonly meta: unknown
 
   constructor(
     status: number,
     message: string,
     details: ApiFieldError[] = [],
     code: string | null = null,
+    meta: unknown = null,
   ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.details = details
     this.code = code
+    this.meta = meta
   }
 }
 
@@ -176,6 +184,7 @@ interface ApiErrorBody {
     message?: string
     code?: string
     details?: ApiFieldError[]
+    meta?: unknown
   }
 }
 
@@ -254,6 +263,7 @@ export async function apiRequest<T>(
       payload?.error?.message ?? `Request failed (${response.status})`,
       payload?.error?.details ?? [],
       payload?.error?.code ?? null,
+      payload?.error?.meta ?? null,
     )
   }
 
@@ -325,6 +335,27 @@ export function resendEmailVerificationRequest(): Promise<{
 export interface ChangePasswordInput {
   currentPassword: string
   newPassword: string
+}
+
+/** Requests a password-reset link. Always returns the same generic message. */
+export function requestPasswordReset(email: string): Promise<{
+  message: string
+}> {
+  return apiRequest<{ message: string }>('/api/auth/password-reset/request', {
+    method: 'POST',
+    body: { email },
+  })
+}
+
+/** Completes a password reset with a single-use token. Does not sign in. */
+export function resetPassword(
+  token: string,
+  password: string,
+): Promise<{ message: string }> {
+  return apiRequest<{ message: string }>('/api/auth/password-reset/confirm', {
+    method: 'POST',
+    body: { token, password },
+  })
 }
 
 /** Replaces the signed-in user's password and clears forced rotation. */

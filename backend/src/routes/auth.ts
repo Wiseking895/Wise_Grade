@@ -47,12 +47,35 @@ import { formatEmailDateTime } from '../email/templates.js'
 import {
   changePasswordUrl,
   dashboardUrl,
+  loginUrl,
+  resetPasswordUrl,
   verificationUrl,
 } from '../email/links.js'
 
-const PASSWORD_RESET_TTL_MINUTES = 60
+const PASSWORD_RESET_TTL_MINUTES = 30
+const PASSWORD_RESET_GENERIC_MESSAGE =
+  'If an account is associated with the email address provided, you will receive a password-reset link shortly. Please check your inbox and spam folder.'
 const LOGIN_LOCK_THRESHOLD = 5
 const LOGIN_LOCK_DURATION_MS = 15 * 60 * 1000
+
+/**
+ * Maps a reset-token failure to a clear, non-enumerating message. The wording is
+ * about the link's own state, never about whether an account exists.
+ */
+function passwordResetFailureMessage(
+  status: 'invalid' | 'expired' | 'used' | 'revoked',
+): string {
+  switch (status) {
+    case 'expired':
+      return 'This password reset link has expired. Request a new link to try again.'
+    case 'used':
+      return 'This password reset link has already been used. Request a new link to try again.'
+    case 'revoked':
+      return 'This password reset link is no longer valid. Request a new link to try again.'
+    default:
+      return 'This password reset link is invalid.'
+  }
+}
 
 let dummyPasswordHash: Promise<string> | undefined
 
@@ -132,6 +155,15 @@ export function createAuthRouter(
     windowMs: options.passwordResetRateLimit?.windowMs ?? 60 * 60 * 1000,
     max: options.passwordResetRateLimit?.max ?? 5,
     scope: 'password reset',
+    keyGenerator: (req) => getClientIp(req) ?? 'unknown',
+  })
+
+  // Validating a token or completing a reset is also rate limited, keyed by IP,
+  // so a brute-force attempt against a stolen or guessed token is slowed.
+  const resetConfirmLimiter = createRateLimiter({
+    windowMs: options.passwordResetRateLimit?.windowMs ?? 60 * 60 * 1000,
+    max: options.passwordResetRateLimit?.max ?? 10,
+    scope: 'password reset confirmation',
     keyGenerator: (req) => getClientIp(req) ?? 'unknown',
   })
 
@@ -797,33 +829,43 @@ export function createAuthRouter(
         const input = parseBody(passwordResetRequestSchema, req.body)
         const user = await repository.findUserByEmail(input.email)
 
-        if (user && user.isActive) {
+        if (user && user.isActive && !user.deletedAt && user.email) {
           const token = generateOpaqueToken()
-
-          await repository.createPasswordResetToken({
+          const expiresAt = new Date(
+            Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000,
+          )
+          const record = await repository.createPasswordResetToken({
             userId: user.id,
             tokenHash: hashToken(token),
-            expiresAt: new Date(
-              Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000,
-            ),
+            expiresAt,
             ipAddress: getClientIp(req),
           })
 
-          // Email delivery is a future integration. Outside production the
-          // link is logged so the flow can be exercised locally.
-          if (env.NODE_ENV !== 'production') {
-            console.info(
-              `[gradely-api] password reset link for ${input.email}: ${env.FRONTEND_URL}/reset-password?token=${token}`,
-            )
-          }
+          // Fire-and-forget delivery: the outbox persists the intent and the
+          // response never waits on SMTP, so known and unknown email paths stay
+          // fast and timing-neutral.
+          void email
+            .send({
+              template: 'password-reset',
+              to: user.email,
+              dedupeKey: `password-reset:${record.id}`,
+              data: {
+                firstName: user.firstName,
+                resetUrl: resetPasswordUrl(token),
+                expiresAt: formatEmailDateTime(expiresAt),
+                expiryMinutes: PASSWORD_RESET_TTL_MINUTES,
+              },
+            })
+            .catch(() => undefined)
+        } else {
+          // Equalize the unknown/disabled path with a cheap throwaway hash so a
+          // missing account does not complete visibly faster.
+          hashToken(generateOpaqueToken())
         }
 
-        // Always the same response: no account enumeration.
+        // Identical response for every case: no account enumeration.
         res.status(202).json({
-          data: {
-            message:
-              'If an account with that email exists, a password reset link has been created.',
-          },
+          data: { message: PASSWORD_RESET_GENERIC_MESSAGE },
         })
       } catch (error) {
         next(error)
@@ -834,28 +876,44 @@ export function createAuthRouter(
   router.post(
     '/password-reset/confirm',
     trustedOrigin,
+    resetConfirmLimiter.middleware,
     async (req, res, next) => {
       try {
         const input = parseBody(passwordResetConfirmSchema, req.body)
         const passwordHash = await hashPassword(input.password)
 
-        const consumed = await repository.consumePasswordResetToken({
+        const result = await repository.consumePasswordResetToken({
           tokenHash: hashToken(input.token),
           passwordHash,
           now: new Date(),
         })
 
-        if (!consumed) {
+        if (result.status !== 'ok') {
           throw new HttpError(
             400,
-            'This password reset link is invalid or has expired',
+            passwordResetFailureMessage(result.status),
+            undefined,
+            `password_reset_${result.status}`,
           )
         }
 
+        // Confirmation email, best-effort and never required for the reset.
+        const context = await repository.findUserWithMemberships(result.userId)
+
+        if (context) {
+          await email.send({
+            template: 'password-changed',
+            to: context.user.email,
+            dedupeKey: `password-changed:${context.user.id}:${Date.now()}`,
+            data: {
+              firstName: context.user.firstName,
+              loginUrl: loginUrl(),
+            },
+          })
+        }
+
         res.status(200).json({
-          data: {
-            message: 'Password updated. Sign in with your new password.',
-          },
+          data: { message: 'Password updated. Sign in with your new password.' },
         })
       } catch (error) {
         next(error)

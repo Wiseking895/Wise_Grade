@@ -2,7 +2,23 @@ import { randomUUID } from 'node:crypto'
 import { HttpError } from '../../src/errors/http-error.js'
 import { generateSubjectAccessCode, hashToken } from '../../src/auth/tokens.js'
 import { DEFAULT_CLASSES } from '../../src/schools/defaults.js'
-import { env } from '../../src/config/env.js'
+import {
+  closingDateBoundary,
+  isSchoolSessionClosed,
+} from '../../src/lib/school-time.js'
+import {
+  filterPupilDuplicateGroups,
+  findPupilConflicts,
+  groupPupilDuplicates,
+  normalizePupilAdmissionNumber,
+  normalizePupilName,
+  pupilDuplicatePairKey,
+  resolvePupilConflict,
+  type PupilDuplicateDecision,
+  type PupilDuplicateDecisionMap,
+  type PupilDuplicateDecisionRecord,
+  type PupilIdentityLike,
+} from '../../src/schools/pupil-duplicates.js'
 import type {
   AcademicTermRecord,
   AcademicYearRecord,
@@ -23,9 +39,13 @@ import type {
   IssuedSubjectTeacherInvitation,
   MovePupilInput,
   PupilDetail,
+  PupilDuplicateDecisionInput,
   PupilEnrollmentRecord,
   PupilListFilter,
   PupilListResult,
+  PupilMergeInput,
+  PupilMergePreviewRecord,
+  PupilMergeResult,
   PupilPhotoRecord,
   PupilRecord,
   RegisterClassWithTeacherInput,
@@ -35,6 +55,7 @@ import type {
   RestoreTeacherMembershipInput,
   SchoolProfile,
   SchoolRepository,
+  SchoolSessionSettings,
   SchoolSignatureDetailsInput,
   SchoolSignatureRecord,
   SubjectRecord,
@@ -48,6 +69,7 @@ import type {
   UpdateClassInput,
   UpdatePupilInput,
   UpdatePupilPhotoInput,
+  UpdateSchoolSessionSettingsInput,
   UpdateSchoolSignatureInput,
   UpdateSubjectInput,
   UpdateTeacherInput,
@@ -161,6 +183,8 @@ export class FakeSchoolRepository implements SchoolRepository {
       logoUrl,
       logoUpdatedAt,
       profileComplete: Boolean(logoUrl && phone && address && landmark),
+      reopeningDate: null,
+      closingDate: null,
       createdAt: new Date(),
     }
 
@@ -174,6 +198,18 @@ export class FakeSchoolRepository implements SchoolRepository {
 
     this.profiles.set(profile.id, profile)
     return { ...profile }
+  }
+
+  /** Test helper: set (or clear) a school's operational session dates. */
+  setSessionDates(
+    schoolId: string,
+    reopeningDate: string | null,
+    closingDate: string | null,
+  ): void {
+    const profile = this.requireProfile(schoolId)
+    profile.reopeningDate = reopeningDate
+    profile.closingDate = closingDate
+    this.auth.setSchoolClosingDate(schoolId, closingDate)
   }
 
   seedDefaults(schoolId: string, actorUserId: string): void {
@@ -601,6 +637,194 @@ export class FakeSchoolRepository implements SchoolRepository {
     return { ...pupil, enrollments: history.map(({ ...item }) => item) }
   }
 
+  private pupilIdentities(schoolId: string): PupilIdentityLike[] {
+    return [...this.pupils.values()]
+      .filter((pupil) => pupil.schoolId === schoolId)
+      .map((pupil) => ({
+        id: pupil.id,
+        firstName: pupil.firstName,
+        lastName: pupil.lastName,
+        otherNames: pupil.otherNames,
+        admissionNumber: pupil.admissionNumber,
+        status: pupil.status,
+        currentClassId: pupil.currentClassId,
+        currentClassName: pupil.currentClassName,
+      }))
+  }
+
+  private pupilDecisions(schoolId: string): PupilDuplicateDecisionMap {
+    const decisions = new Map<string, PupilDuplicateDecisionRecord>()
+    const relevant = this.audits
+      .filter(
+        (entry) =>
+          entry.schoolId === schoolId &&
+          (entry.action === 'PUPIL_DUPLICATE_MARKED_DIFFERENT' ||
+            entry.action === 'PUPIL_DUPLICATE_MARKED_SAME' ||
+            entry.action === 'PUPIL_MERGED'),
+      )
+      .slice()
+      .reverse()
+
+    for (const entry of relevant) {
+      const metadata = entry.metadata ?? {}
+      const nameKey =
+        typeof metadata.nameKey === 'string' ? metadata.nameKey : null
+      const admissions = Array.isArray(metadata.admissionNumbers)
+        ? metadata.admissionNumbers.filter(
+            (value): value is string => typeof value === 'string',
+          )
+        : []
+      const firstAdmission = admissions[0]
+      const secondAdmission = admissions[1]
+
+      if (!nameKey || !firstAdmission || !secondAdmission) {
+        continue
+      }
+
+      const key = pupilDuplicatePairKey(
+        nameKey,
+        firstAdmission,
+        secondAdmission,
+      )
+
+      if (decisions.has(key)) {
+        continue
+      }
+
+      const rawDecision =
+        typeof metadata.decision === 'string' ? metadata.decision : null
+      const decision: PupilDuplicateDecision =
+        rawDecision === 'DIFFERENT' ||
+        rawDecision === 'SAME' ||
+        rawDecision === 'MERGED'
+          ? rawDecision
+          : entry.action === 'PUPIL_MERGED'
+            ? 'MERGED'
+            : entry.action === 'PUPIL_DUPLICATE_MARKED_SAME'
+              ? 'SAME'
+              : 'DIFFERENT'
+
+      decisions.set(key, {
+        decision,
+        decidedAt: new Date().toISOString(),
+        decidedByUserId: entry.actorUserId,
+        note: typeof metadata.note === 'string' ? metadata.note : null,
+      })
+    }
+
+    return decisions
+  }
+
+  private enforcePupilDuplicates(
+    schoolId: string,
+    audit: AuditContext,
+    identity: {
+      firstName: string
+      lastName: string
+      otherNames?: string | null
+      admissionNumber: string
+    },
+    excludePupilId: string | null,
+    confirmDifferentPupil?: boolean,
+    duplicateOfPupilId?: string | null,
+  ): void {
+    const nameKey = normalizePupilName(identity)
+    const conflicts = findPupilConflicts({
+      nameKey,
+      admissionNumber: identity.admissionNumber,
+      candidates: this.pupilIdentities(schoolId),
+      excludePupilId,
+    })
+    const resolution = resolvePupilConflict({
+      conflicts,
+      decisions: this.pupilDecisions(schoolId),
+      nameKey,
+      admissionNumber: identity.admissionNumber,
+      confirmedPupilId: confirmDifferentPupil
+        ? (duplicateOfPupilId ?? null)
+        : null,
+    })
+
+    if (resolution.blocking) {
+      const conflict = resolution.blocking
+      const meta = {
+        category: conflict.category,
+        requiresConfirmation: resolution.requiresConfirmation,
+        nameKey,
+        admissionNumber: normalizePupilAdmissionNumber(
+          identity.admissionNumber,
+        ),
+        existingPupil: {
+          id: conflict.pupil.id,
+          fullName: [
+            conflict.pupil.firstName,
+            conflict.pupil.lastName,
+            conflict.pupil.otherNames,
+          ]
+            .filter((part): part is string => Boolean(part))
+            .join(' '),
+          firstName: conflict.pupil.firstName,
+          lastName: conflict.pupil.lastName,
+          otherNames: conflict.pupil.otherNames ?? null,
+          admissionNumber: conflict.pupil.admissionNumber,
+          status: conflict.pupil.status,
+          currentClassId: conflict.pupil.currentClassId ?? null,
+          currentClassName: conflict.pupil.currentClassName ?? null,
+        },
+      }
+
+      if (conflict.category === 'EXACT_DUPLICATE') {
+        throw new HttpError(
+          409,
+          'A pupil with this exact name and admission number already exists in this school.',
+          undefined,
+          'PUPIL_DUPLICATE_EXACT',
+          meta,
+        )
+      }
+
+      if (conflict.category === 'ADMISSION_CONFLICT') {
+        throw new HttpError(
+          409,
+          'This admission number is already assigned to a different pupil in this school.',
+          undefined,
+          'PUPIL_DUPLICATE_ADMISSION',
+          meta,
+        )
+      }
+
+      throw new HttpError(
+        409,
+        'A pupil with this exact name already exists in this school, but has a different admission number. Are these records for the same pupil?',
+        undefined,
+        'PUPIL_DUPLICATE_NAME',
+        meta,
+      )
+    }
+
+    if (confirmDifferentPupil && resolution.confirmedCandidate) {
+      this.record(
+        schoolId,
+        audit,
+        'PUPIL_DUPLICATE_MARKED_DIFFERENT',
+        'Pupil',
+        resolution.confirmedCandidate.id,
+        {
+          nameKey,
+          admissionNumbers: [
+            normalizePupilAdmissionNumber(identity.admissionNumber),
+            normalizePupilAdmissionNumber(
+              resolution.confirmedCandidate.admissionNumber,
+            ),
+          ],
+          primaryPupilId: resolution.confirmedCandidate.id,
+          duplicatePupilId: null,
+          decision: 'DIFFERENT',
+        },
+      )
+    }
+  }
+
   private teacherRecord(
     schoolId: string,
     membershipId: string,
@@ -767,6 +991,70 @@ export class FakeSchoolRepository implements SchoolRepository {
     this.record(schoolId, audit, 'SCHOOL_PROFILE_UPDATED', 'School', schoolId)
 
     return { ...profile }
+  }
+
+  async getSchoolSessionSettings(
+    schoolId: string,
+  ): Promise<SchoolSessionSettings | null> {
+    const profile = this.profiles.get(schoolId)
+    return profile
+      ? {
+          schoolId: profile.id,
+          schoolName: profile.name,
+          currentAcademicYearName: this.currentYearName(schoolId),
+          reopeningDate: profile.reopeningDate,
+          closingDate: profile.closingDate,
+          lastUpdatedAt: null,
+          lastUpdatedByUserId: null,
+          lastUpdatedByName: null,
+        }
+      : null
+  }
+
+  async updateSchoolSessionSettings(
+    schoolId: string,
+    input: UpdateSchoolSessionSettingsInput,
+    audit: AuditContext,
+  ): Promise<SchoolSessionSettings> {
+    const profile = this.requireProfile(schoolId)
+
+    if (input.closingDate <= input.reopeningDate) {
+      throw new HttpError(
+        400,
+        'The closing date must be later than the reopening date',
+      )
+    }
+
+    const previousReopeningDate = profile.reopeningDate
+    const previousClosingDate = profile.closingDate
+    profile.reopeningDate = input.reopeningDate
+    profile.closingDate = input.closingDate
+
+    this.record(schoolId, audit, 'SCHOOL_SESSION_UPDATED', 'School', schoolId, {
+      previousReopeningDate,
+      previousClosingDate,
+      reopeningDate: input.reopeningDate,
+      closingDate: input.closingDate,
+    })
+
+    return {
+      schoolId: profile.id,
+      schoolName: profile.name,
+      currentAcademicYearName: this.currentYearName(schoolId),
+      reopeningDate: input.reopeningDate,
+      closingDate: input.closingDate,
+      lastUpdatedAt: new Date(),
+      lastUpdatedByUserId: audit.actorUserId,
+      lastUpdatedByName: null,
+    }
+  }
+
+  private currentYearName(schoolId: string): string | null {
+    const current = [...this.years.values()]
+      .filter((year) => year.schoolId === schoolId && year.isCurrent)
+      .sort((a, b) => b.startsOn.localeCompare(a.startsOn))[0]
+
+    return current?.name ?? null
   }
 
   // -----------------------------------------------------------------------
@@ -1844,6 +2132,7 @@ export class FakeSchoolRepository implements SchoolRepository {
               ? 'EXPIRED'
               : 'PENDING',
         expiresAt: item.expiresAt,
+        closingDate: item.closingDate,
         usedAt: item.usedAt,
         revokedAt: item.revokedAt,
         reissuedFromId: item.reissuedFromId,
@@ -1994,6 +2283,28 @@ export class FakeSchoolRepository implements SchoolRepository {
     reissuedFromId?: string
   }): IssuedSubjectTeacherInvitation {
     const now = new Date()
+    const profile = this.requireProfile(input.schoolId)
+
+    // Access codes require a configured, still-open school session.
+    if (!profile.closingDate) {
+      throw new HttpError(
+        409,
+        'The school closing date has not been configured yet. Ask a school administrator to set the school session dates before issuing subject-teacher access codes.',
+        undefined,
+        'SCHOOL_SESSION_NOT_CONFIGURED',
+      )
+    }
+
+    if (
+      isSchoolSessionClosed(now, profile.closingDate, profile.timezone)
+    ) {
+      throw new HttpError(
+        409,
+        'The school session has closed, so new subject-teacher access codes cannot be issued.',
+        undefined,
+        'SCHOOL_SESSION_CLOSED',
+      )
+    }
 
     for (const item of this.subjectTeacherInvitations.values()) {
       if (
@@ -2033,14 +2344,8 @@ export class FakeSchoolRepository implements SchoolRepository {
       email: input.identity.email,
       phone: input.identity.phone,
       status: 'PENDING',
-      expiresAt: new Date(
-        now.getTime() +
-          Math.max(1, env.SUBJECT_TEACHER_ACCESS_CODE_EXPIRY_DAYS) *
-            24 *
-            60 *
-            60 *
-            1000,
-      ),
+      expiresAt: closingDateBoundary(profile.closingDate),
+      closingDate: profile.closingDate,
       usedAt: null,
       revokedAt: null,
       reissuedFromId: input.reissuedFromId ?? null,
@@ -2091,6 +2396,7 @@ export class FakeSchoolRepository implements SchoolRepository {
       phone: invitation.phone,
       status: invitation.status,
       expiresAt: invitation.expiresAt,
+      closingDate: invitation.closingDate,
       usedAt: invitation.usedAt,
       revokedAt: invitation.revokedAt,
       reissuedFromId: invitation.reissuedFromId,
@@ -2278,18 +2584,20 @@ export class FakeSchoolRepository implements SchoolRepository {
     }
 
     const admissionNumber = input.admissionNumber.trim().toUpperCase()
-    const duplicate = [...this.pupils.values()].some(
-      (pupil) =>
-        pupil.schoolId === schoolId &&
-        pupil.admissionNumber === admissionNumber,
-    )
 
-    if (duplicate) {
-      throw new HttpError(
-        409,
-        'A pupil with this admission number already exists in this school',
-      )
-    }
+    this.enforcePupilDuplicates(
+      schoolId,
+      audit,
+      {
+        firstName: input.firstName,
+        lastName: input.lastName,
+        otherNames: input.otherNames ?? null,
+        admissionNumber: input.admissionNumber,
+      },
+      null,
+      input.confirmDifferentPupil,
+      input.duplicateOfPupilId,
+    )
 
     const pupil: PupilRecord = {
       id: randomUUID(),
@@ -2347,28 +2655,32 @@ export class FakeSchoolRepository implements SchoolRepository {
   ): Promise<PupilDetail> {
     const pupil = this.requirePupil(schoolId, pupilId)
 
-    if (input.admissionNumber !== undefined) {
-      const admissionNumber = input.admissionNumber.trim().toUpperCase()
-      const duplicate = [...this.pupils.values()].some(
-        (item) =>
-          item.id !== pupilId &&
-          item.schoolId === schoolId &&
-          item.admissionNumber === admissionNumber,
-      )
-
-      if (duplicate) {
-        throw new HttpError(
-          409,
-          'A pupil with this admission number already exists in this school',
-        )
-      }
-
-      pupil.admissionNumber = admissionNumber
+    const identity = {
+      firstName:
+        input.firstName === undefined ? pupil.firstName : clean(input.firstName),
+      lastName:
+        input.lastName === undefined ? pupil.lastName : clean(input.lastName),
+      otherNames:
+        input.otherNames === undefined ? pupil.otherNames : input.otherNames,
+      admissionNumber:
+        input.admissionNumber === undefined
+          ? pupil.admissionNumber
+          : input.admissionNumber.trim().toUpperCase(),
     }
 
-    if (input.firstName !== undefined) pupil.firstName = clean(input.firstName)
-    if (input.lastName !== undefined) pupil.lastName = clean(input.lastName)
-    if (input.otherNames !== undefined) pupil.otherNames = input.otherNames
+    this.enforcePupilDuplicates(
+      schoolId,
+      audit,
+      identity,
+      pupilId,
+      input.confirmDifferentPupil,
+      input.duplicateOfPupilId,
+    )
+
+    pupil.admissionNumber = identity.admissionNumber
+    pupil.firstName = identity.firstName
+    pupil.lastName = identity.lastName
+    pupil.otherNames = identity.otherNames
     if (input.gender !== undefined) pupil.gender = input.gender
     if (input.dateOfBirth !== undefined) pupil.dateOfBirth = input.dateOfBirth
     if (input.status !== undefined) pupil.status = input.status
@@ -2457,6 +2769,222 @@ export class FakeSchoolRepository implements SchoolRepository {
     })
 
     return this.detail(pupil)
+  }
+
+  async listPupilDuplicates(
+    schoolId: string,
+    filter: {
+      category?: 'DEFINITE' | 'NAME_CONFLICT' | 'ADMISSION_CONFLICT'
+      query?: string
+    } = {},
+  ) {
+    return filterPupilDuplicateGroups(
+      groupPupilDuplicates(
+        this.pupilIdentities(schoolId),
+        this.pupilDecisions(schoolId),
+      ),
+      filter,
+    )
+  }
+
+  async recordPupilDuplicateDecision(
+    schoolId: string,
+    input: PupilDuplicateDecisionInput,
+    audit: AuditContext,
+  ) {
+    if (input.primaryPupilId === input.duplicatePupilId) {
+      throw new HttpError(400, 'Choose two different pupil records')
+    }
+
+    const primary = this.requirePupil(schoolId, input.primaryPupilId)
+    const duplicate = this.requirePupil(schoolId, input.duplicatePupilId)
+    const nameKey = normalizePupilName(primary)
+
+    if (normalizePupilName(duplicate) !== nameKey) {
+      throw new HttpError(
+        409,
+        'These records do not share the same exact name and cannot be marked as the same pupil',
+      )
+    }
+
+    const admissionNumbers = [
+      normalizePupilAdmissionNumber(primary.admissionNumber),
+      normalizePupilAdmissionNumber(duplicate.admissionNumber),
+    ].sort() as [string, string]
+
+    if (admissionNumbers[0] === admissionNumbers[1]) {
+      throw new HttpError(
+        409,
+        'These records share an admission number. Correct the admission number before recording a decision.',
+      )
+    }
+
+    this.record(
+      schoolId,
+      audit,
+      input.decision === 'DIFFERENT'
+        ? 'PUPIL_DUPLICATE_MARKED_DIFFERENT'
+        : 'PUPIL_DUPLICATE_MARKED_SAME',
+      'Pupil',
+      input.duplicatePupilId,
+      {
+        nameKey,
+        admissionNumbers,
+        primaryPupilId: input.primaryPupilId,
+        duplicatePupilId: input.duplicatePupilId,
+        decision: input.decision,
+        note: input.note ?? null,
+      },
+    )
+
+    return {
+      decision: input.decision,
+      primaryPupilId: input.primaryPupilId,
+      duplicatePupilId: input.duplicatePupilId,
+      nameKey,
+      admissionNumbers,
+    }
+  }
+
+  async previewPupilMerge(
+    schoolId: string,
+    primaryPupilId: string,
+    duplicatePupilId: string,
+  ): Promise<PupilMergePreviewRecord> {
+    if (primaryPupilId === duplicatePupilId) {
+      throw new HttpError(400, 'Choose two different pupil records')
+    }
+
+    const primary = this.requirePupil(schoolId, primaryPupilId)
+    const duplicate = this.requirePupil(schoolId, duplicatePupilId)
+
+    if (normalizePupilName(primary) !== normalizePupilName(duplicate)) {
+      throw new HttpError(
+        409,
+        'Only pupil records with the exact same name can be merged',
+      )
+    }
+
+    const primaryKeys = new Set(
+      [...this.enrollments.values()]
+        .filter((enrollment) => enrollment.pupilId === primary.id)
+        .map(
+          (enrollment) =>
+            `${enrollment.classId}:${enrollment.academicYearId}`,
+        ),
+    )
+    const transferableEnrollments = [...this.enrollments.values()].filter(
+      (enrollment) =>
+        enrollment.pupilId === duplicate.id &&
+        !primaryKeys.has(
+          `${enrollment.classId}:${enrollment.academicYearId}`,
+        ),
+    ).length
+
+    return {
+      primaryPupil: { ...primary },
+      duplicatePupil: { ...duplicate },
+      canMerge: true,
+      transferable: {
+        enrollments: transferableEnrollments,
+        subjectScores: 0,
+        assessmentScores: 0,
+        reportInputs: 0,
+        reportCards: 0,
+        reportFailures: 0,
+        invoicePupils: 0,
+      },
+      conflicts: [],
+    }
+  }
+
+  async mergePupils(
+    schoolId: string,
+    input: PupilMergeInput,
+    audit: AuditContext,
+  ): Promise<PupilMergeResult> {
+    const preview = await this.previewPupilMerge(
+      schoolId,
+      input.primaryPupilId,
+      input.duplicatePupilId,
+    )
+
+    if (!preview.canMerge) {
+      throw new HttpError(
+        409,
+        'This merge needs manual review before it can continue.',
+        undefined,
+        'PUPIL_MERGE_CONFLICTS',
+        { conflicts: preview.conflicts },
+      )
+    }
+
+    const primary = this.requirePupil(schoolId, input.primaryPupilId)
+    const duplicate = this.requirePupil(schoolId, input.duplicatePupilId)
+    const primaryKeys = new Set(
+      [...this.enrollments.values()]
+        .filter((enrollment) => enrollment.pupilId === primary.id)
+        .map(
+          (enrollment) =>
+            `${enrollment.classId}:${enrollment.academicYearId}`,
+        ),
+    )
+
+    for (const enrollment of this.enrollments.values()) {
+      if (enrollment.pupilId !== duplicate.id) {
+        continue
+      }
+
+      if (
+        primaryKeys.has(
+          `${enrollment.classId}:${enrollment.academicYearId}`,
+        )
+      ) {
+        if (enrollment.status === 'ACTIVE') {
+          enrollment.status = 'WITHDRAWN'
+          enrollment.endedOn = today()
+        }
+      } else {
+        enrollment.pupilId = primary.id
+      }
+    }
+
+    if (duplicate.status === 'ACTIVE') {
+      primary.status = 'ACTIVE'
+    }
+
+    if (!primary.currentClassId) {
+      primary.currentClassId = duplicate.currentClassId
+      primary.currentClassName = duplicate.currentClassName
+    }
+
+    duplicate.status = 'ARCHIVED'
+    duplicate.currentClassId = null
+    duplicate.currentClassName = null
+
+    this.record(schoolId, audit, 'PUPIL_MERGED', 'Pupil', primary.id, {
+      nameKey: normalizePupilName(primary),
+      admissionNumbers: [
+        normalizePupilAdmissionNumber(primary.admissionNumber),
+        normalizePupilAdmissionNumber(duplicate.admissionNumber),
+      ],
+      primaryPupilId: primary.id,
+      duplicatePupilId: duplicate.id,
+      decision: 'MERGED',
+      note: input.note ?? null,
+      transferred: preview.transferable,
+    })
+
+    this.record(schoolId, audit, 'PUPIL_ARCHIVED', 'Pupil', duplicate.id, {
+      admissionNumber: duplicate.admissionNumber,
+      mergedIntoPupilId: primary.id,
+    })
+
+    return {
+      primaryPupil: this.detail(primary),
+      archivedPupilId: duplicate.id,
+      transferred: preview.transferable,
+    }
   }
 
   async getPupilPhoto(

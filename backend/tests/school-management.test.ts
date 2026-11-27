@@ -53,6 +53,9 @@ async function registerSchool(
     email: overrides.email,
   })
   schools.seedDefaults(schoolId, adminUserId)
+  // Every school needs a configured, still-open session before access codes
+  // can be issued; keep it open for the whole suite.
+  schools.setSessionDates(schoolId, '2020-01-01', '2999-12-31')
 
   return { app, auth, schools, admin, schoolId, adminUserId }
 }
@@ -847,12 +850,14 @@ describe('Phase 3 school management', () => {
         academicYearId: year.id,
         startedOn: year.startsOn,
         admissionNumber: 'ROLL-001',
+        firstName: 'Roll One',
       })
       const second = await createPupil(teacher.agent, {
         classId: teacher.classId,
         academicYearId: year.id,
         startedOn: year.startsOn,
         admissionNumber: 'ROLL-002',
+        firstName: 'Roll Two',
       })
 
       let dashboard = await dashboardFor(teacher.agent)
@@ -881,6 +886,7 @@ describe('Phase 3 school management', () => {
         academicYearId: year.id,
         startedOn: year.startsOn,
         admissionNumber: 'ROLL-003',
+        firstName: 'Roll Three',
       })
 
       dashboard = await dashboardFor(teacher.agent)

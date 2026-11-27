@@ -16,7 +16,7 @@ import {
 } from 'react'
 import FormField from '../../components/FormField'
 import PupilPhotoField from '../../components/PupilPhotoField'
-import { apiAssetUrl } from '../../lib/api'
+import { ApiError, apiAssetUrl } from '../../lib/api'
 import type { PreparedPupilPhoto } from '../../lib/images'
 import {
   Badge,
@@ -53,6 +53,7 @@ import type {
   AcademicYear,
   Pupil,
   PupilDetail,
+  PupilDuplicateConflictMeta,
   PupilInput,
   PupilStatus,
   SchoolClass,
@@ -105,6 +106,23 @@ function releasePreparedPhoto(photo: PreparedPupilPhoto | null): void {
   }
 }
 
+function isPupilDuplicateConflictMeta(
+  value: unknown,
+): value is PupilDuplicateConflictMeta {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const candidate = value as Partial<PupilDuplicateConflictMeta>
+
+  return (
+    typeof candidate.category === 'string' &&
+    typeof candidate.requiresConfirmation === 'boolean' &&
+    Boolean(candidate.existingPupil) &&
+    typeof candidate.existingPupil === 'object'
+  )
+}
+
 export default function PupilsPage() {
   const { schoolId, isAdmin, role } = useSchool()
   // Pupil records are owned by the assigned class teacher. School
@@ -133,6 +151,8 @@ export default function PupilsPage() {
   const [form, setForm] = useState<PupilFormState>(EMPTY_PUPIL)
   const [formError, setFormError] = useState<string | null>(null)
   const [formBusy, setFormBusy] = useState(false)
+  const [duplicatePrompt, setDuplicatePrompt] =
+    useState<PupilDuplicateConflictMeta | null>(null)
   const [pendingPhoto, setPendingPhoto] = useState<PreparedPupilPhoto | null>(
     null,
   )
@@ -276,13 +296,21 @@ export default function PupilsPage() {
     }
   }
 
-  async function submitPupil(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    if (!schoolId) return
+  async function persistPupil(
+    confirmDifferentPupil: boolean,
+    existingPupilId?: string,
+  ): Promise<boolean> {
+    if (!schoolId) return false
 
     setFormBusy(true)
     setFormError(null)
+
+    const confirmation: Partial<PupilInput> = confirmDifferentPupil
+      ? {
+          confirmDifferentPupil: true,
+          duplicateOfPupilId: existingPupilId ?? null,
+        }
+      : {}
 
     try {
       let savedPupil: PupilDetail
@@ -297,6 +325,7 @@ export default function PupilsPage() {
           dateOfBirth:
             form.dateOfBirth.trim() === '' ? null : form.dateOfBirth,
           status: form.status,
+          ...confirmation,
         }
         const response = await updatePupil(schoolId, editingPupil.id, input)
         savedPupil = response.pupil
@@ -312,6 +341,7 @@ export default function PupilsPage() {
           classId: form.classId || null,
           academicYearId: form.academicYearId || null,
           startedOn: form.startedOn,
+          ...confirmation,
         }
         const response = await createPupil(schoolId, input)
         savedPupil = response.pupil
@@ -341,7 +371,7 @@ export default function PupilsPage() {
               'The upload did not finish. Check your connection and try again.',
             )} The photograph is still selected; save again to retry.`,
           )
-          return
+          return false
         }
       }
 
@@ -352,14 +382,59 @@ export default function PupilsPage() {
       )
       releasePreparedPhoto(pendingPhoto)
       setPendingPhoto(null)
+      setDuplicatePrompt(null)
       setFormOpen(false)
       await loadPupils()
+      return true
     } catch (cause) {
-      setFormError(
-        cause instanceof Error ? cause.message : 'Could not save the pupil.',
-      )
+      if (
+        cause instanceof ApiError &&
+        cause.code?.startsWith('PUPIL_DUPLICATE_') &&
+        isPupilDuplicateConflictMeta(cause.meta)
+      ) {
+        setDuplicatePrompt(cause.meta)
+        setFormError(null)
+      } else {
+        setFormError(
+          cause instanceof Error ? cause.message : 'Could not save the pupil.',
+        )
+      }
+      return false
     } finally {
       setFormBusy(false)
+    }
+  }
+
+  function submitPupil(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    void persistPupil(false)
+  }
+
+  async function confirmDifferentPupil() {
+    if (!duplicatePrompt) return
+    await persistPupil(true, duplicatePrompt.existingPupil.id)
+  }
+
+  async function openExistingDuplicate() {
+    if (!schoolId || !duplicatePrompt) return
+
+    const pupilId = duplicatePrompt.existingPupil.id
+    setDuplicatePrompt(null)
+    setFormOpen(false)
+    setDetailOpen(true)
+    setDetail(null)
+    setDetailError(null)
+    setDetailLoading(true)
+
+    try {
+      const response = await getPupil(schoolId, pupilId)
+      setDetail(response.pupil)
+    } catch (cause) {
+      setDetailError(
+        cause instanceof Error ? cause.message : 'Could not load the pupil.',
+      )
+    } finally {
+      setDetailLoading(false)
     }
   }
 
@@ -1350,6 +1425,133 @@ export default function PupilsPage() {
                   </table>
                 </div>
               )}
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={duplicatePrompt !== null}
+        title={
+          duplicatePrompt?.category === 'NAME_CONFLICT'
+            ? 'A pupil with this name already exists'
+            : duplicatePrompt?.category === 'EXACT_DUPLICATE'
+              ? 'This pupil is already registered'
+              : 'This admission number is already in use'
+        }
+        description={
+          duplicatePrompt?.category === 'NAME_CONFLICT'
+            ? 'The complete name matches an existing pupil in this school, but the admission number is different.'
+            : 'The record cannot be saved because it conflicts with an existing pupil in this school.'
+        }
+        onClose={() => {
+          if (!formBusy) setDuplicatePrompt(null)
+        }}
+      >
+        {duplicatePrompt ? (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-gradely-light/60 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gradely-muted">
+                Existing pupil
+              </p>
+              <p className="mt-1 text-base font-bold text-gradely-text">
+                {duplicatePrompt.existingPupil.fullName}
+              </p>
+              <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+                <div>
+                  <dt className="text-xs text-gradely-muted">Admission</dt>
+                  <dd className="font-medium text-gradely-text">
+                    {duplicatePrompt.existingPupil.admissionNumber}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-gradely-muted">Class</dt>
+                  <dd className="font-medium text-gradely-text">
+                    {duplicatePrompt.existingPupil.currentClassName ??
+                      'Not enrolled'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-gradely-muted">Status</dt>
+                  <dd>
+                    <Badge
+                      tone={
+                        duplicatePrompt.existingPupil.status === 'ACTIVE'
+                          ? 'success'
+                          : duplicatePrompt.existingPupil.status === 'INACTIVE'
+                            ? 'warning'
+                            : 'neutral'
+                      }
+                    >
+                      {statusLabel(duplicatePrompt.existingPupil.status)}
+                    </Badge>
+                  </dd>
+                </div>
+              </dl>
+            </div>
+
+            {duplicatePrompt.category === 'NAME_CONFLICT' ? (
+              <p className="text-sm leading-relaxed text-gradely-text">
+                Are these records for the same pupil? If they are, do not
+                register a second record. Ask a school administrator to open
+                Pupil duplicates, compare both records and merge them safely.
+                If this is a different pupil who happens to share the same
+                name, confirm below to continue.
+              </p>
+            ) : null}
+
+            {duplicatePrompt.category === 'EXACT_DUPLICATE' ? (
+              <p className="text-sm leading-relaxed text-gradely-text">
+                This exact name and admission number already exist. Open the
+                existing record instead of creating another one.
+              </p>
+            ) : null}
+
+            {duplicatePrompt.category === 'ADMISSION_CONFLICT' ? (
+              <p className="text-sm leading-relaxed text-gradely-text">
+                Admission numbers must be unique across the school. Change the
+                admission number in the form before saving.
+              </p>
+            ) : null}
+
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
+              <Button
+                variant="secondary"
+                onClick={() => setDuplicatePrompt(null)}
+                disabled={formBusy}
+              >
+                {duplicatePrompt.category === 'NAME_CONFLICT'
+                  ? 'Cancel'
+                  : 'Close'}
+              </Button>
+
+              {duplicatePrompt.category === 'EXACT_DUPLICATE' ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => void openExistingDuplicate()}
+                  disabled={formBusy}
+                >
+                  View existing record
+                </Button>
+              ) : null}
+
+              {duplicatePrompt.category === 'NAME_CONFLICT' ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setDuplicatePrompt(null)}
+                    disabled={formBusy}
+                  >
+                    Same pupil — resolve with an administrator
+                  </Button>
+                  <Button
+                    onClick={() => void confirmDifferentPupil()}
+                    loading={formBusy}
+                  >
+                    These are different pupils — continue
+                  </Button>
+                </>
+              ) : null}
             </div>
           </div>
         ) : null}

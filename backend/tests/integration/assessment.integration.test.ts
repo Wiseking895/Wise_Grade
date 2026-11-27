@@ -354,6 +354,14 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
       where: { id: registrationData.user.id },
       data: { emailVerifiedAt: new Date(), emailVerificationRequired: false },
     })
+    // Subject-teacher access codes require a configured, still-open session.
+    await prisma.school.update({
+      where: { id: schoolId },
+      data: {
+        reopeningDate: new Date('2020-01-01T00:00:00.000Z'),
+        closingDate: new Date('2099-12-31T00:00:00.000Z'),
+      },
+    })
 
     const years = await admin.get(
       `/api/schools/${schoolId}/academic-years`,
@@ -783,7 +791,8 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
       .send({ code: reissuedData.invitation.code })
     expect(revokedEntry.status).toBe(401)
 
-    // A revoked code can be reissued, but an expired one cannot be used.
+    // A revoked code can be reissued, but a code whose school session has
+    // closed cannot be used: expiry follows the school's closing date.
     const afterRevoke = await ctAgent
       .post(
         `/api/schools/${fixture.schoolId}/classes/${registered.class.id}/subject-teacher-invitations/${reissuedData.invitation.id}/reissue`,
@@ -795,9 +804,10 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
       invitation: { id: string; code: string }
     }>(afterRevoke)
 
-    await prisma.subjectTeacherInvitation.update({
-      where: { id: afterRevokeData.invitation.id },
-      data: { expiresAt: new Date(Date.now() - 60_000) },
+    // Bringing the school closing date forward ends the session immediately.
+    await prisma.school.update({
+      where: { id: fixture.schoolId },
+      data: { closingDate: new Date('2020-01-01T00:00:00.000Z') },
     })
 
     const expiredEntry = await request(app)
@@ -806,7 +816,13 @@ describe.skipIf(!runIntegration)('Phase 4 assessment integration', () => {
       .send({ code: afterRevokeData.invitation.code })
     expect(expiredEntry.status).toBe(401)
 
-    // Reissuing the expired code produces a working reusable code.
+    // Restoring the closing date lets the same non-revoked code work again.
+    await prisma.school.update({
+      where: { id: fixture.schoolId },
+      data: { closingDate: new Date('2099-12-31T00:00:00.000Z') },
+    })
+
+    // Reissuing the code produces a working reusable code.
     const finalReissue = await ctAgent
       .post(
         `/api/schools/${fixture.schoolId}/classes/${registered.class.id}/subject-teacher-invitations/${afterRevokeData.invitation.id}/reissue`,

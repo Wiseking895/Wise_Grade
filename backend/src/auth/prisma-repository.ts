@@ -1,5 +1,6 @@
 import { getPrismaClient } from '../lib/prisma.js'
 import type { Prisma } from '../generated/prisma/client.js'
+import { isSchoolSessionClosed } from '../lib/school-time.js'
 import {
   academicStartYearFor,
   assessmentDeadlineFor,
@@ -22,12 +23,18 @@ import type {
   MemberSummary,
   MembershipRecord,
   MembershipStatus,
+  PasswordResetConsumeResult,
   SchoolSummary,
   SessionRecord,
   SubjectSessionRecord,
   UserRecord,
 } from './repository.js'
 import { isSchoolRole, type SchoolRole } from './roles.js'
+
+/** Converts a date-only (or full) Date into a `YYYY-MM-DD` calendar string. */
+function dateOnly(value: Date): string {
+  return value.toISOString().slice(0, 10)
+}
 
 interface DbUser {
   id: string
@@ -195,7 +202,15 @@ function mapSubjectSession(session: {
 }
 
 const subjectAssignmentInclude = {
-  school: { select: { name: true, slug: true, isActive: true } },
+  school: {
+    select: {
+      name: true,
+      slug: true,
+      isActive: true,
+      timezone: true,
+      closingDate: true,
+    },
+  },
   class: { select: { name: true, isArchived: true } },
   subject: { select: { name: true, isArchived: true } },
   membership: {
@@ -636,40 +651,70 @@ export function createPrismaAuthRepository(): AuthRepository {
 
     async createPasswordResetToken(
       input: CreatePasswordResetTokenInput,
-    ): Promise<void> {
-      await getPrismaClient().passwordResetToken.create({
-        data: {
-          userId: input.userId,
-          tokenHash: input.tokenHash,
-          expiresAt: input.expiresAt,
-          ipAddress: input.ipAddress,
-        },
+    ): Promise<{ id: string }> {
+      const prisma = getPrismaClient()
+      const now = new Date()
+
+      return prisma.$transaction(async (tx) => {
+        // A new request supersedes every outstanding link for this account, so
+        // an older link can never be replayed after a fresh one is issued.
+        await tx.passwordResetToken.updateMany({
+          where: { userId: input.userId, usedAt: null, revokedAt: null },
+          data: { revokedAt: now },
+        })
+
+        const token = await tx.passwordResetToken.create({
+          data: {
+            userId: input.userId,
+            tokenHash: input.tokenHash,
+            expiresAt: input.expiresAt,
+            ipAddress: input.ipAddress,
+          },
+        })
+
+        return { id: token.id }
       })
     },
 
-    async consumePasswordResetToken(input): Promise<boolean> {
+    async consumePasswordResetToken(input): Promise<PasswordResetConsumeResult> {
       const prisma = getPrismaClient()
 
       return prisma.$transaction(async (tx) => {
         const token = await tx.passwordResetToken.findFirst({
-          where: {
-            tokenHash: input.tokenHash,
-            usedAt: null,
-            expiresAt: { gt: input.now },
-          },
+          where: { tokenHash: input.tokenHash },
         })
 
         if (!token) {
-          return false
+          return { status: 'invalid' }
         }
 
+        if (token.revokedAt !== null) {
+          return { status: 'revoked' }
+        }
+
+        if (token.usedAt !== null) {
+          return { status: 'used' }
+        }
+
+        if (token.expiresAt <= input.now) {
+          return { status: 'expired' }
+        }
+
+        // Conditional update makes repeated or concurrent clicks safe: only one
+        // request can transition the token from unused to used.
         const consumed = await tx.passwordResetToken.updateMany({
-          where: { id: token.id, usedAt: null },
+          where: {
+            id: token.id,
+            usedAt: null,
+            revokedAt: null,
+            expiresAt: { gt: input.now },
+          },
           data: { usedAt: input.now },
         })
 
         if (consumed.count !== 1) {
-          return false
+          // A concurrent request won the race.
+          return { status: 'used' }
         }
 
         await tx.user.update({
@@ -683,6 +728,12 @@ export function createPrismaAuthRepository(): AuthRepository {
           data: { revokedAt: input.now },
         })
 
+        // Revoke every other outstanding reset link for this account.
+        await tx.passwordResetToken.updateMany({
+          where: { userId: token.userId, usedAt: null, revokedAt: null },
+          data: { revokedAt: input.now },
+        })
+
         await tx.auditLog.create({
           data: {
             actorUserId: token.userId,
@@ -692,7 +743,7 @@ export function createPrismaAuthRepository(): AuthRepository {
           },
         })
 
-        return true
+        return { status: 'ok', userId: token.userId }
       })
     },
 
@@ -820,9 +871,10 @@ export function createPrismaAuthRepository(): AuthRepository {
           where: {
             codeHash: input.codeHash,
             revokedAt: null,
-            expiresAt: { gt: input.now },
             // Legacy one-time codes that were already consumed must not be
-            // turned back into reusable access codes.
+            // turned back into reusable access codes. The code's expiry is no
+            // longer a fixed offset: it follows the school's closing date, so
+            // `expiresAt` is not used as an access filter here.
             usedAt: null,
           },
         })
@@ -877,6 +929,24 @@ export function createPrismaAuthRepository(): AuthRepository {
         })
 
         if (!classSubject?.isActive) {
+          return null
+        }
+
+        // A code is valid only while the school has a configured session and
+        // the school-local date has not passed the configured closing date.
+        const school = assignment.school
+
+        if (!school.closingDate) {
+          return null
+        }
+
+        if (
+          isSchoolSessionClosed(
+            input.now,
+            dateOnly(school.closingDate),
+            school.timezone,
+          )
+        ) {
           return null
         }
 

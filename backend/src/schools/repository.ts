@@ -1,4 +1,9 @@
 import type { SchoolRole } from '../auth/roles.js'
+import type {
+  PupilDuplicateAudit,
+  PupilDuplicateCategory,
+  PupilDuplicateDecision,
+} from './pupil-duplicates.js'
 
 export type PupilGender = 'MALE' | 'FEMALE' | 'OTHER'
 export type PupilStatus = 'ACTIVE' | 'INACTIVE' | 'ARCHIVED'
@@ -24,7 +29,27 @@ export interface SchoolProfile {
   logoUrl: string | null
   logoUpdatedAt: Date | null
   profileComplete: boolean
+  /** School operational session boundaries (school-local calendar dates). */
+  reopeningDate: string | null
+  closingDate: string | null
   createdAt: Date
+}
+
+export interface SchoolSessionSettings {
+  schoolId: string
+  schoolName: string
+  /** Display label for the current academic year, when one exists. */
+  currentAcademicYearName: string | null
+  reopeningDate: string | null
+  closingDate: string | null
+  lastUpdatedAt: Date | null
+  lastUpdatedByUserId: string | null
+  lastUpdatedByName: string | null
+}
+
+export interface UpdateSchoolSessionSettingsInput {
+  reopeningDate: string
+  closingDate: string
 }
 
 export interface SchoolSignatureRecord {
@@ -178,6 +203,57 @@ export interface PupilDetail extends PupilRecord {
   enrollments: PupilEnrollmentRecord[]
 }
 
+export interface PupilDuplicateDecisionInput {
+  primaryPupilId: string
+  duplicatePupilId: string
+  decision: Exclude<PupilDuplicateDecision, 'MERGED'>
+  note?: string | null
+}
+
+export interface PupilMergeInput {
+  primaryPupilId: string
+  duplicatePupilId: string
+  /** The caller must pass true after the final confirmation dialog. */
+  confirm: true
+  note?: string | null
+}
+
+export type PupilMergeArea =
+  | 'PUPIL_SUBJECT_SCORE'
+  | 'REPORT_INPUT'
+  | 'REPORT_CARD'
+  | 'INVOICE'
+
+export interface PupilMergeConflictRecord {
+  area: PupilMergeArea
+  key: string
+  message: string
+}
+
+export interface PupilMergeTransferCounts {
+  enrollments: number
+  subjectScores: number
+  assessmentScores: number
+  reportInputs: number
+  reportCards: number
+  reportFailures: number
+  invoicePupils: number
+}
+
+export interface PupilMergePreviewRecord {
+  primaryPupil: PupilRecord
+  duplicatePupil: PupilRecord
+  canMerge: boolean
+  transferable: PupilMergeTransferCounts
+  conflicts: PupilMergeConflictRecord[]
+}
+
+export interface PupilMergeResult {
+  primaryPupil: PupilDetail
+  archivedPupilId: string
+  transferred: PupilMergeTransferCounts
+}
+
 export interface SubjectRecord {
   id: string
   schoolId: string
@@ -305,6 +381,13 @@ export interface CreatePupilInput {
   classId?: string | null
   academicYearId?: string | null
   startedOn?: string
+  /**
+   * Set only after the administrator/teacher explicitly confirms that a
+   * same-name pupil with a different admission number is a different person.
+   */
+  confirmDifferentPupil?: boolean
+  /** The existing same-name pupil the confirmation refers to. */
+  duplicateOfPupilId?: string | null
 }
 
 export interface UpdatePupilInput {
@@ -315,6 +398,8 @@ export interface UpdatePupilInput {
   gender?: PupilGender | null
   dateOfBirth?: string | null
   status?: PupilStatus
+  confirmDifferentPupil?: boolean
+  duplicateOfPupilId?: string | null
 }
 
 export interface MovePupilInput {
@@ -364,6 +449,8 @@ export interface SubjectTeacherInvitationRecord {
   phone: string | null
   status: 'PENDING' | 'USED' | 'EXPIRED' | 'REVOKED' | 'REISSUED'
   expiresAt: Date
+  /** The school's configured closing date, used for display and expiry. */
+  closingDate: string | null
   usedAt: Date | null
   revokedAt: Date | null
   reissuedFromId: string | null
@@ -481,6 +568,16 @@ export interface SchoolRepository {
     },
     audit: AuditContext,
   ): Promise<SchoolProfile>
+  /** Read-only school session settings (reopening/closing dates + audit info). */
+  getSchoolSessionSettings(
+    schoolId: string,
+  ): Promise<SchoolSessionSettings | null>
+  /** Admin-only: sets the school's reopening and closing dates. */
+  updateSchoolSessionSettings(
+    schoolId: string,
+    input: UpdateSchoolSessionSettingsInput,
+    audit: AuditContext,
+  ): Promise<SchoolSessionSettings>
   updateSchoolLogo(
     schoolId: string,
     input: {
@@ -656,6 +753,35 @@ export interface SchoolRepository {
     pupilId: string,
     audit: AuditContext,
   ): Promise<PupilDetail>
+  /** Read-only, school-scoped audit of existing pupil duplicates. */
+  listPupilDuplicates(
+    schoolId: string,
+    filter?: { category?: PupilDuplicateCategory; query?: string },
+  ): Promise<PupilDuplicateAudit>
+  /** Persists an administrator's same/different decision in the audit trail. */
+  recordPupilDuplicateDecision(
+    schoolId: string,
+    input: PupilDuplicateDecisionInput,
+    audit: AuditContext,
+  ): Promise<{
+    decision: PupilDuplicateDecision
+    primaryPupilId: string
+    duplicatePupilId: string
+    nameKey: string
+    admissionNumbers: [string, string]
+  }>
+  /** Inspects dependent records before a merge. Never mutates anything. */
+  previewPupilMerge(
+    schoolId: string,
+    primaryPupilId: string,
+    duplicatePupilId: string,
+  ): Promise<PupilMergePreviewRecord>
+  /** Transfers safe dependent records, then archives the duplicate pupil. */
+  mergePupils(
+    schoolId: string,
+    input: PupilMergeInput,
+    audit: AuditContext,
+  ): Promise<PupilMergeResult>
   getPupilPhoto(
     schoolId: string,
     pupilId: string,

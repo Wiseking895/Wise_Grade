@@ -18,7 +18,20 @@ export interface SchoolProfile {
   logoUrl: string | null
   logoUpdatedAt: string | null
   profileComplete: boolean
+  reopeningDate: string | null
+  closingDate: string | null
   createdAt: string
+}
+
+export interface SchoolSessionSettings {
+  schoolId: string
+  schoolName: string
+  currentAcademicYearName: string | null
+  reopeningDate: string | null
+  closingDate: string | null
+  lastUpdatedAt: string | null
+  lastUpdatedByUserId: string | null
+  lastUpdatedByName: string | null
 }
 
 /** School administrator signature shown on terminal reports. */
@@ -276,6 +289,139 @@ export interface PupilInput {
   academicYearId?: string | null
   startedOn?: string
   status?: PupilStatus
+  /** Sent only after the user confirms a same-name pupil is a different person. */
+  confirmDifferentPupil?: boolean
+  duplicateOfPupilId?: string | null
+}
+
+export type PupilDuplicateCategory =
+  | 'DEFINITE'
+  | 'NAME_CONFLICT'
+  | 'ADMISSION_CONFLICT'
+
+export type PupilDuplicateDecision = 'DIFFERENT' | 'SAME' | 'MERGED'
+
+export type PupilConflictCategory =
+  | 'EXACT_DUPLICATE'
+  | 'ADMISSION_CONFLICT'
+  | 'NAME_CONFLICT'
+
+export interface PupilIdentitySummary {
+  id: string
+  fullName: string
+  firstName: string
+  lastName: string
+  otherNames: string | null
+  admissionNumber: string
+  status: PupilStatus
+  currentClassId: string | null
+  currentClassName: string | null
+}
+
+/** Structured `ApiError.meta` returned with a duplicate conflict. */
+export interface PupilDuplicateConflictMeta {
+  category: PupilConflictCategory
+  requiresConfirmation: boolean
+  nameKey: string
+  admissionNumber: string
+  existingPupil: PupilIdentitySummary
+}
+
+export interface PupilDuplicatePair {
+  pupilIds: [string, string]
+  admissionNumbers: [string, string]
+  decision: PupilDuplicateDecision | null
+  decidedAt: string | null
+  decidedByUserId: string | null
+  note: string | null
+}
+
+export interface PupilDuplicateGroupPupil {
+  id: string
+  firstName: string
+  lastName: string
+  otherNames?: string | null
+  admissionNumber: string
+  status: string
+  currentClassId?: string | null
+  currentClassName?: string | null
+}
+
+export interface PupilDuplicateGroup {
+  key: string
+  category: PupilDuplicateCategory
+  nameKey: string
+  admissionNumbers: string[]
+  pupils: PupilDuplicateGroupPupil[]
+  pairs: PupilDuplicatePair[]
+  resolved: boolean
+  suggestedResolution: string
+}
+
+export interface PupilDuplicateSummary {
+  definiteRecords: number
+  possibleRecords: number
+  admissionConflictRecords: number
+  possibleGroups: number
+  admissionConflictGroups: number
+  resolvedGroups: number
+  awaitingGroups: number
+}
+
+export interface PupilDuplicateAudit {
+  generatedAt: string
+  groups: PupilDuplicateGroup[]
+  summary: PupilDuplicateSummary
+}
+
+export interface PupilDuplicateDecisionInput {
+  primaryPupilId: string
+  duplicatePupilId: string
+  decision: 'DIFFERENT' | 'SAME'
+  note?: string | null
+}
+
+export type PupilMergeArea =
+  | 'PUPIL_SUBJECT_SCORE'
+  | 'REPORT_INPUT'
+  | 'REPORT_CARD'
+  | 'INVOICE'
+
+export interface PupilMergeConflict {
+  area: PupilMergeArea
+  key: string
+  message: string
+}
+
+export interface PupilMergeTransferCounts {
+  enrollments: number
+  subjectScores: number
+  assessmentScores: number
+  reportInputs: number
+  reportCards: number
+  reportFailures: number
+  invoicePupils: number
+}
+
+export interface PupilMergePreview {
+  primaryPupil: Pupil
+  duplicatePupil: Pupil
+  canMerge: boolean
+  transferable: PupilMergeTransferCounts
+  conflicts: PupilMergeConflict[]
+}
+
+export interface PupilMergeInput {
+  primaryPupilId: string
+  duplicatePupilId: string
+  confirm: true
+  note?: string | null
+}
+
+export interface PupilMergeResult {
+  primaryPupil: PupilDetail
+  archivedPupilId: string
+  transferred: PupilMergeTransferCounts
 }
 
 export interface SubjectInput {
@@ -333,6 +479,8 @@ export interface SubjectTeacherInvitation {
   phone: string | null
   status: SubjectTeacherInvitationStatus
   expiresAt: string
+  /** The school's configured closing date, used for the "valid until" label. */
+  closingDate: string | null
   usedAt: string | null
   revokedAt: string | null
   reissuedFromId: string | null

@@ -27,13 +27,18 @@ import {
   createPupilSchema,
   membershipBodySchema,
   movePupilSchema,
+  pupilDuplicateDecisionSchema,
+  pupilDuplicateQuerySchema,
   pupilListQuerySchema,
+  pupilMergePreviewSchema,
+  pupilMergeSchema,
   registerClassWithTeacherSchema,
   registerTeacherSchema,
   removeTeacherMembershipSchema,
   restoreTeacherMembershipSchema,
   pupilPhotoUploadBodySchema,
   schoolLogoUploadBodySchema,
+  schoolSessionSettingsSchema,
   signatureDetailsSchema,
   signatureUploadBodySchema,
   updatePupilSchema,
@@ -773,6 +778,39 @@ export function createSchoolsRouter(
     }
   })
 
+  // ---------------------------------------------------------------------------
+  // School Session Settings (school administrators only)
+  // ---------------------------------------------------------------------------
+
+  router.get('/:schoolId/session-settings', admin, async (req, res, next) => {
+    try {
+      const access = requireAccess(req)
+      const settings = await schoolRepository.getSchoolSessionSettings(
+        access.schoolId,
+      )
+
+      res.status(200).json({ data: { settings } })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  router.patch('/:schoolId/session-settings', admin, async (req, res, next) => {
+    try {
+      const access = requireAccess(req)
+      const input = parseBody(schoolSessionSettingsSchema, req.body)
+      const settings = await schoolRepository.updateSchoolSessionSettings(
+        access.schoolId,
+        input,
+        auditContext(req),
+      )
+
+      res.status(200).json({ data: { settings } })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   router.get('/:schoolId/members', admin, noStore, async (req, res, next) => {
     try {
       const access = requireAccess(req)
@@ -1375,6 +1413,89 @@ export function createSchoolsRouter(
         )
 
         res.status(200).json({ data: { pupil } })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // -------------------------------------------------------------------------
+  // Pupil duplicate management (school administrators only)
+  // -------------------------------------------------------------------------
+
+  router.get(
+    '/:schoolId/pupil-duplicates',
+    admin,
+    async (req, res, next) => {
+      try {
+        const access = requireAccess(req)
+        const query = parseBody(pupilDuplicateQuerySchema, req.query)
+        const audit = await schoolRepository.listPupilDuplicates(
+          access.schoolId,
+          { category: query.category, query: query.q ?? undefined },
+        )
+
+        res.status(200).json({ data: audit })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  router.post(
+    '/:schoolId/pupil-duplicates/decisions',
+    admin,
+    async (req, res, next) => {
+      try {
+        const access = requireAccess(req)
+        const input = parseBody(pupilDuplicateDecisionSchema, req.body)
+        const result = await schoolRepository.recordPupilDuplicateDecision(
+          access.schoolId,
+          input,
+          auditContext(req),
+        )
+
+        res.status(201).json({ data: result })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  router.post(
+    '/:schoolId/pupil-duplicates/merge-preview',
+    admin,
+    async (req, res, next) => {
+      try {
+        const access = requireAccess(req)
+        const input = parseBody(pupilMergePreviewSchema, req.body)
+        const preview = await schoolRepository.previewPupilMerge(
+          access.schoolId,
+          input.primaryPupilId,
+          input.duplicatePupilId,
+        )
+
+        res.status(200).json({ data: { preview } })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  router.post(
+    '/:schoolId/pupil-duplicates/merge',
+    admin,
+    async (req, res, next) => {
+      try {
+        const access = requireAccess(req)
+        const input = parseBody(pupilMergeSchema, req.body)
+        const result = await schoolRepository.mergePupils(
+          access.schoolId,
+          input,
+          auditContext(req),
+        )
+
+        res.status(200).json({ data: result })
       } catch (error) {
         next(error)
       }

@@ -1,9 +1,11 @@
 import {
   CalendarCheck,
   CalendarDays,
+  CalendarRange,
   ClipboardCheck,
   ClipboardList,
   FileText,
+  GitMerge,
   GraduationCap,
   HeartHandshake,
   LayoutDashboard,
@@ -66,6 +68,12 @@ const NAV_ITEMS: NavItem[] = [  {
     roles: ADMIN_ROLES,
   },
   {
+    to: '/dashboard/session-settings',
+    label: 'School session',
+    icon: CalendarRange,
+    roles: ADMIN_ROLES,
+  },
+  {
     to: '/dashboard/calendar',
     label: 'Calendar',
     icon: CalendarDays,
@@ -105,6 +113,12 @@ const NAV_ITEMS: NavItem[] = [  {
     to: '/dashboard/teachers',
     label: 'Teachers',
     icon: GraduationCap,
+    roles: ADMIN_ROLES,
+  },
+  {
+    to: '/dashboard/pupil-duplicates',
+    label: 'Pupil duplicates',
+    icon: GitMerge,
     roles: ADMIN_ROLES,
   },
   {

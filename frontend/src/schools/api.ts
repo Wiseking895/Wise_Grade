@@ -12,8 +12,15 @@ import type {
   IssuedSubjectTeacherInvitation,
   OnboardingEmailStatus,
   PupilDetail,
+  PupilDuplicateAudit,
+  PupilDuplicateCategory,
+  PupilDuplicateDecision,
+  PupilDuplicateDecisionInput,
   PupilInput,
   PupilListResult,
+  PupilMergeInput,
+  PupilMergePreview,
+  PupilMergeResult,
   PupilStatus,
   RegisterClassWithTeacherInput,
   RegisterTeacherInput,
@@ -22,6 +29,7 @@ import type {
   SchoolClass,
   SchoolProfile,
   SchoolProfileInput,
+  SchoolSessionSettings,
   SchoolSignature,
   Subject,
   SubjectInput,
@@ -43,6 +51,22 @@ function schoolPath(schoolId: string, suffix = ''): string {
 export function getSchoolProfile(schoolId: string) {
   return apiRequest<{ school: SchoolProfile }>(
     schoolPath(schoolId, '/profile'),
+  )
+}
+
+export function getSchoolSessionSettings(schoolId: string) {
+  return apiRequest<{ settings: SchoolSessionSettings }>(
+    schoolPath(schoolId, '/session-settings'),
+  )
+}
+
+export function updateSchoolSessionSettings(
+  schoolId: string,
+  input: { reopeningDate: string; closingDate: string },
+) {
+  return apiRequest<{ settings: SchoolSessionSettings }>(
+    schoolPath(schoolId, '/session-settings'),
+    { method: 'PATCH', body: input },
   )
 }
 
@@ -281,6 +305,54 @@ export function archivePupil(schoolId: string, pupilId: string) {
   return apiRequest<{ pupil: PupilDetail }>(
     schoolPath(schoolId, `/pupils/${pupilId}/archive`),
     { method: 'POST', body: {} },
+  )
+}
+
+export function listPupilDuplicates(
+  schoolId: string,
+  query: { category?: PupilDuplicateCategory; q?: string } = {},
+) {
+  const params = new URLSearchParams()
+
+  if (query.category) params.set('category', query.category)
+  if (query.q) params.set('q', query.q)
+
+  const suffix = params.size > 0 ? `?${params.toString()}` : ''
+  return apiRequest<PupilDuplicateAudit>(
+    schoolPath(schoolId, `/pupil-duplicates${suffix}`),
+  )
+}
+
+export function recordPupilDuplicateDecision(
+  schoolId: string,
+  input: PupilDuplicateDecisionInput,
+) {
+  return apiRequest<{
+    decision: PupilDuplicateDecision
+    primaryPupilId: string
+    duplicatePupilId: string
+    nameKey: string
+    admissionNumbers: [string, string]
+  }>(schoolPath(schoolId, '/pupil-duplicates/decisions'), {
+    method: 'POST',
+    body: input,
+  })
+}
+
+export function previewPupilMerge(
+  schoolId: string,
+  input: { primaryPupilId: string; duplicatePupilId: string },
+) {
+  return apiRequest<{ preview: PupilMergePreview }>(
+    schoolPath(schoolId, '/pupil-duplicates/merge-preview'),
+    { method: 'POST', body: input },
+  )
+}
+
+export function mergePupils(schoolId: string, input: PupilMergeInput) {
+  return apiRequest<PupilMergeResult>(
+    schoolPath(schoolId, '/pupil-duplicates/merge'),
+    { method: 'POST', body: input },
   )
 }
 

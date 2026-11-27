@@ -722,8 +722,14 @@ export default function ClassesPage() {
                                   </Badge>
                                   <span className="text-gradely-muted">
                                     {invitation.firstName}{' '}
-                                    {invitation.lastName} · expires{' '}
-                                    {formatDate(invitation.expiresAt)}
+                                    {invitation.lastName} · valid until{' '}
+                                    {formatDate(
+                                      invitation.closingDate ??
+                                        invitation.expiresAt,
+                                    )}
+                                    {invitation.closingDate
+                                      ? ' — School closing date'
+                                      : ''}
                                   </span>
                                 </span>
                                 {invitation.status !== 'USED' ? (
@@ -932,8 +938,15 @@ export default function ClassesPage() {
                 {issuedInvitation.code}
               </p>
               <p className="mt-2 text-xs text-gradely-muted">
-                Expires {formatDate(issuedInvitation.expiresAt)}. The code is
-                stored only as a secure hash; it cannot be shown again.
+                Valid until{' '}
+                {formatDate(
+                  issuedInvitation.closingDate ?? issuedInvitation.expiresAt,
+                )}
+                {issuedInvitation.closingDate
+                  ? ' — School closing date'
+                  : ''}
+                . The code is stored only as a secure hash; it cannot be shown
+                again.
               </p>
             </div>
 

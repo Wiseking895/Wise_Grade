@@ -175,6 +175,9 @@ export function errorHandler(
       ...(isHttpError && error.details !== undefined
         ? { details: error.details }
         : {}),
+      ...(isHttpError && error.meta !== undefined
+        ? { meta: error.meta }
+        : {}),
     },
   })
 }

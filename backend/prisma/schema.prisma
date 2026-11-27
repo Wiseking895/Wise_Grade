@@ -53,6 +53,12 @@ model School {
   timezone String  @default("Africa/Accra") @db.VarChar(64)
   isActive Boolean @default(true)
 
+  // School operational session boundaries. Null until an administrator
+  // configures them. Subject-teacher access codes remain valid until the end of
+  // `closingDate` in the school's timezone.
+  reopeningDate DateTime? @db.Date
+  closingDate   DateTime? @db.Date
+
   // School branding. The logo itself lives in private object storage; only the
   // opaque storage reference and its content type are persisted here.
   logoObjectKey String?   @db.VarChar(512)
@@ -515,6 +521,8 @@ model PasswordResetToken {
   tokenHash String    @unique @db.VarChar(64)
   expiresAt DateTime
   usedAt    DateTime?
+  /// Set when a newer reset request or a completed reset supersedes this token.
+  revokedAt DateTime?
   ipAddress String?   @db.VarChar(45)
   createdAt DateTime  @default(now())
 

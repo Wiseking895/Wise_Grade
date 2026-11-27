@@ -137,6 +137,13 @@ export interface CreatePasswordResetTokenInput {
   ipAddress?: string
 }
 
+export type PasswordResetConsumeResult =
+  | { status: 'ok'; userId: string }
+  | { status: 'invalid' }
+  | { status: 'expired' }
+  | { status: 'used' }
+  | { status: 'revoked' }
+
 export interface CreateEmailVerificationTokenInput {
   userId: string
   tokenHash: string
@@ -268,14 +275,18 @@ export interface AuthRepository {
 
   listSchoolMembers(schoolId: string): Promise<MemberSummary[]>
 
-  createPasswordResetToken(input: CreatePasswordResetTokenInput): Promise<void>
+  createPasswordResetToken(input: CreatePasswordResetTokenInput): Promise<{ id: string }>
 
-  /** Marks the token used, updates the password, and revokes sessions atomically. */
+  /**
+   * Single-use password-reset consumption. Returns a discriminated result so the
+   * caller can distinguish invalid, expired, already-used and revoked links
+   * without revealing whether any particular account exists.
+   */
   consumePasswordResetToken(input: {
     tokenHash: string
     passwordHash: string
     now: Date
-  }): Promise<boolean>
+  }): Promise<PasswordResetConsumeResult>
 
   /**
    * Revokes every outstanding verification token for the user and creates a new

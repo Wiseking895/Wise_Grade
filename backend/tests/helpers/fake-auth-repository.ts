@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { hashPassword } from '../../src/auth/password.js'
 import { hashToken } from '../../src/auth/tokens.js'
+import { isSchoolSessionClosed } from '../../src/lib/school-time.js'
 import type {
   AuditEntry,
   AuthRepository,
@@ -13,6 +14,7 @@ import type {
   MemberSummary,
   MembershipRecord,
   MembershipStatus,
+  PasswordResetConsumeResult,
   SchoolSummary,
   SessionRecord,
   SubjectSessionRecord,
@@ -45,6 +47,7 @@ interface StoredResetToken {
   tokenHash: string
   expiresAt: Date
   usedAt: Date | null
+  revokedAt: Date | null
 }
 
 interface StoredVerificationToken {
@@ -110,6 +113,8 @@ export class FakeAuthRepository implements AuthRepository {
   readonly verificationTokens = new Map<string, StoredVerificationToken>()
   readonly invitations = new Map<string, StoredInvitation>()
   readonly subjectSessions = new Map<string, StoredSubjectSession>()
+  /** Per-school configured closing date (school-local). `undefined` = unset. */
+  readonly schoolClosingDates = new Map<string, string | null>()
   readonly mfaSecrets = new Map<
     string,
     {
@@ -449,38 +454,71 @@ export class FakeAuthRepository implements AuthRepository {
 
   async createPasswordResetToken(
     input: CreatePasswordResetTokenInput,
-  ): Promise<void> {
+  ): Promise<{ id: string }> {
+    const now = new Date()
+
+    // A new request supersedes every outstanding link for this account.
+    for (const token of this.resetTokens.values()) {
+      if (token.userId === input.userId && token.usedAt === null && token.revokedAt === null) {
+        token.revokedAt = now
+      }
+    }
+
+    const id = randomUUID()
     this.resetTokens.set(input.tokenHash, {
       userId: input.userId,
       tokenHash: input.tokenHash,
       expiresAt: input.expiresAt,
       usedAt: null,
+      revokedAt: null,
     })
+
+    return { id }
   }
 
   async consumePasswordResetToken(input: {
     tokenHash: string
     passwordHash: string
     now: Date
-  }): Promise<boolean> {
+  }): Promise<PasswordResetConsumeResult> {
     const token = this.resetTokens.get(input.tokenHash)
 
-    if (
-      !token ||
-      token.usedAt !== null ||
-      token.expiresAt <= input.now
-    ) {
-      return false
+    if (!token) {
+      return { status: 'invalid' }
+    }
+
+    if (token.revokedAt !== null) {
+      return { status: 'revoked' }
+    }
+
+    if (token.usedAt !== null) {
+      return { status: 'used' }
+    }
+
+    if (token.expiresAt <= input.now) {
+      return { status: 'expired' }
     }
 
     const user = this.users.get(token.userId)
 
     if (!user) {
-      return false
+      return { status: 'invalid' }
     }
 
     token.usedAt = input.now
     user.passwordHash = input.passwordHash
+
+    // Revoke every other outstanding reset link for this account.
+    for (const other of this.resetTokens.values()) {
+      if (
+        other.tokenHash !== token.tokenHash &&
+        other.userId === token.userId &&
+        other.usedAt === null &&
+        other.revokedAt === null
+      ) {
+        other.revokedAt = input.now
+      }
+    }
 
     await this.revokeAllSessionsForUser(user.id)
     this.audits.push({
@@ -490,7 +528,7 @@ export class FakeAuthRepository implements AuthRepository {
       entityId: user.id,
     })
 
-    return true
+    return { status: 'ok', userId: user.id }
   }
 
   async createEmailVerificationToken(
@@ -599,8 +637,7 @@ export class FakeAuthRepository implements AuthRepository {
     if (
       !invitation ||
       invitation.revokedAt !== null ||
-      invitation.usedAt !== null ||
-      invitation.expiresAt <= input.now
+      invitation.usedAt !== null
     ) {
       return null
     }
@@ -609,6 +646,31 @@ export class FakeAuthRepository implements AuthRepository {
 
     // Access-code entry is refused while the school is suspended.
     if (!school?.isActive) {
+      return null
+    }
+
+    // When a session is configured, the school's closing date is authoritative;
+    // otherwise the test double keeps the legacy expiresAt behaviour so suites
+    // that predate session dates keep working.
+    const configuredClosingDate = this.schoolClosingDates.get(
+      invitation.schoolId,
+    )
+
+    if (configuredClosingDate === null) {
+      return null
+    }
+
+    if (configuredClosingDate === undefined) {
+      if (invitation.expiresAt <= input.now) {
+        return null
+      }
+    } else if (
+      isSchoolSessionClosed(
+        input.now,
+        configuredClosingDate,
+        school.timezone,
+      )
+    ) {
       return null
     }
 
@@ -842,6 +904,11 @@ export class FakeAuthRepository implements AuthRepository {
     if (invitation) {
       Object.assign(invitation, updates)
     }
+  }
+
+  /** Test helper: configure (or clear) a school's closing date. */
+  setSchoolClosingDate(schoolId: string, closingDate: string | null): void {
+    this.schoolClosingDates.set(schoolId, closingDate)
   }
 
   async addMembership(

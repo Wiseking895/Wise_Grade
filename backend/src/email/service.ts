@@ -89,6 +89,7 @@ const SENSITIVE_TEMPLATES: ReadonlySet<EmailTemplateName> = new Set([
   'teacher-credentials',
   'subject-assignment',
   'subject-code-replaced',
+  'password-reset',
 ])
 
 const REDACTED = '[redacted]'
@@ -100,6 +101,7 @@ function redactPayload(
   const payload = { ...data }
 
   if ('verificationUrl' in payload) payload.verificationUrl = REDACTED
+  if ('resetUrl' in payload) payload.resetUrl = REDACTED
   if ('temporaryPassword' in payload) payload.temporaryPassword = REDACTED
   if ('accessCode' in payload) payload.accessCode = REDACTED
 

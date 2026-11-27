@@ -1,6 +1,5 @@
 import { HttpError } from '../errors/http-error.js'
 import { getPrismaClient } from '../lib/prisma.js'
-import { env } from '../config/env.js'
 import type { Prisma } from '../generated/prisma/client.js'
 import { isUniqueConstraintError } from '../auth/prisma-repository.js'
 import { isSchoolRole, type SchoolRole } from '../auth/roles.js'
@@ -9,10 +8,29 @@ import {
   hashToken,
 } from '../auth/tokens.js'
 import {
+  closingDateBoundary,
+  isSchoolSessionClosed,
+} from '../lib/school-time.js'
+import {
   isSchoolIdentityComplete,
   schoolLogoUrl,
 } from '../lib/school-branding.js'
 import { DEFAULT_CLASSES } from './defaults.js'
+import {
+  displayPupilName,
+  filterPupilDuplicateGroups,
+  findPupilConflicts,
+  groupPupilDuplicates,
+  normalizePupilAdmissionNumber,
+  normalizePupilName,
+  pupilDuplicatePairKey,
+  resolvePupilConflict,
+  type PupilConflictCandidate,
+  type PupilDuplicateDecision,
+  type PupilDuplicateDecisionMap,
+  type PupilDuplicateDecisionRecord,
+  type PupilIdentityLike,
+} from './pupil-duplicates.js'
 import type {
   AcademicTermRecord,
   AcademicYearRecord,
@@ -26,6 +44,8 @@ import type {
   IssuedSubjectTeacherInvitation,
   MovePupilInput,
   PupilEnrollmentRecord,
+  PupilMergeConflictRecord,
+  PupilMergePreviewRecord,
   PupilRecord,
   RegisterClassWithTeacherInput,
   RegisterTeacherInput,
@@ -61,7 +81,7 @@ function normalizeName(value: string): string {
 }
 
 function normalizeAdmissionNumber(value: string): string {
-  return value.trim().toUpperCase()
+  return normalizePupilAdmissionNumber(value)
 }
 
 function mapSchool(school: {
@@ -77,6 +97,8 @@ function mapSchool(school: {
   logoObjectKey: string | null
   logoMimeType: string | null
   logoUpdatedAt: Date | null
+  reopeningDate: Date | null
+  closingDate: Date | null
   createdAt: Date
 }): SchoolProfile {
   return {
@@ -92,6 +114,8 @@ function mapSchool(school: {
     logoUrl: schoolLogoUrl(school.id, school.logoUpdatedAt),
     logoUpdatedAt: school.logoUpdatedAt,
     profileComplete: isSchoolIdentityComplete(school),
+    reopeningDate: school.reopeningDate ? dateOnly(school.reopeningDate) : null,
+    closingDate: school.closingDate ? dateOnly(school.closingDate) : null,
     createdAt: school.createdAt,
   }
 }
@@ -414,6 +438,7 @@ type SubjectTeacherInvitationRelations = {
   createdAt: Date
   class: { name: string }
   subject: { name: string }
+  school: { closingDate: Date | null }
   assignment: SubjectTeacherAssignmentRelations | null
   membership: {
     userId: string
@@ -472,6 +497,7 @@ function mapSubjectTeacherInvitation(
     phone: identity.phone,
     status: invitationStatus(item),
     expiresAt: item.expiresAt,
+    closingDate: item.school.closingDate ? dateOnly(item.school.closingDate) : null,
     usedAt: item.usedAt,
     revokedAt: item.revokedAt,
     reissuedFromId: item.reissuedFromId,
@@ -911,13 +937,6 @@ async function findTeacherMembership(
   return membership
 }
 
-const INVITATION_TTL_MS =
-  Math.max(1, env.SUBJECT_TEACHER_ACCESS_CODE_EXPIRY_DAYS) *
-  24 *
-  60 *
-  60 *
-  1000
-
 /**
  * Resolve a subject teacher's identity without creating a User, Membership or
  * password. The access code alone grants the restricted subject session.
@@ -991,6 +1010,38 @@ async function issueSubjectTeacherInvitation(
   } = options
   const now = options.now ?? new Date()
 
+  // Access codes are valid until the school's configured closing date. A
+  // school must have a session configured before any code can be issued, and
+  // a closed session cannot issue fresh codes.
+  const school = await tx.school.findFirst({
+    where: { id: schoolId },
+    select: { closingDate: true, timezone: true },
+  })
+
+  if (!school) {
+    throw new HttpError(404, 'School not found')
+  }
+
+  if (!school.closingDate) {
+    throw new HttpError(
+      409,
+      'The school closing date has not been configured yet. Ask a school administrator to set the school session dates before issuing subject-teacher access codes.',
+      undefined,
+      'SCHOOL_SESSION_NOT_CONFIGURED',
+    )
+  }
+
+  const closingDateValue = dateOnly(school.closingDate)
+
+  if (isSchoolSessionClosed(now, closingDateValue, school.timezone)) {
+    throw new HttpError(
+      409,
+      'The school session has closed, so new subject-teacher access codes cannot be issued.',
+      undefined,
+      'SCHOOL_SESSION_CLOSED',
+    )
+  }
+
   // A new code supersedes every previous unused code for this class subject,
   // including codes issued to a teacher who has just been replaced.
   await tx.subjectTeacherInvitation.updateMany({
@@ -1031,10 +1082,11 @@ async function issueSubjectTeacherInvitation(
       membershipId: membershipId ?? null,
       createdByMembershipId,
       codeHash,
-      expiresAt: new Date(now.getTime() + INVITATION_TTL_MS),
+      expiresAt: closingDateBoundary(closingDateValue),
       reissuedFromId: reissuedFromId ?? null,
     },
     include: {
+      school: { select: { closingDate: true } },
       class: { select: { name: true } },
       subject: { select: { name: true } },
       assignment: {
@@ -1251,6 +1303,595 @@ function conflictFromUnique(error: unknown, message: string): never {
   throw error
 }
 
+// ---------------------------------------------------------------------------
+// Pupil duplicate detection and merge helpers
+// ---------------------------------------------------------------------------
+
+const PUPIL_DUPLICATE_ACTIONS = [
+  'PUPIL_DUPLICATE_MARKED_DIFFERENT',
+  'PUPIL_DUPLICATE_MARKED_SAME',
+  'PUPIL_MERGED',
+] as const
+
+/**
+ * Serializes duplicate checks for one normalized name inside a school. The
+ * lock is released automatically when the transaction ends, so concurrent
+ * registrations cannot both pass the conflict check.
+ */
+async function acquirePupilLock(tx: Tx, key: string): Promise<void> {
+  // PostgreSQL returns `void` for this function. Cast it to text so Prisma can
+  // deserialize the single row; otherwise the lock call fails the transaction.
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))::text`
+}
+
+async function loadPupilIdentities(
+  tx: Tx,
+  schoolId: string,
+): Promise<PupilIdentityLike[]> {
+  const rows = await tx.pupil.findMany({
+    where: { schoolId },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      otherNames: true,
+      admissionNumber: true,
+      status: true,
+      currentClassId: true,
+      currentClass: { select: { name: true } },
+    },
+  })
+
+  return rows.map((row) => ({
+    id: row.id,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    otherNames: row.otherNames,
+    admissionNumber: row.admissionNumber,
+    status: row.status,
+    currentClassId: row.currentClassId,
+    currentClassName: row.currentClass?.name ?? null,
+  }))
+}
+
+/**
+ * Rebuilds the administrator's most recent decision for each same-name pair
+ * from the audit trail. The latest decision wins.
+ */
+async function loadPupilDecisions(
+  tx: Tx,
+  schoolId: string,
+): Promise<PupilDuplicateDecisionMap> {
+  const rows = await tx.auditLog.findMany({
+    where: { schoolId, action: { in: [...PUPIL_DUPLICATE_ACTIONS] } },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      action: true,
+      metadata: true,
+      createdAt: true,
+      actorUserId: true,
+    },
+  })
+
+  const decisions = new Map<string, PupilDuplicateDecisionRecord>()
+
+  for (const row of rows) {
+    const metadata = (row.metadata ?? {}) as Record<string, unknown>
+    const nameKey =
+      typeof metadata.nameKey === 'string' ? metadata.nameKey : null
+    const admissions = Array.isArray(metadata.admissionNumbers)
+      ? metadata.admissionNumbers.filter(
+          (value): value is string => typeof value === 'string',
+        )
+      : []
+
+    const firstAdmission = admissions[0]
+    const secondAdmission = admissions[1]
+
+    if (!nameKey || !firstAdmission || !secondAdmission) {
+      continue
+    }
+
+    const key = pupilDuplicatePairKey(nameKey, firstAdmission, secondAdmission)
+
+    if (decisions.has(key)) {
+      continue
+    }
+
+    const rawDecision =
+      typeof metadata.decision === 'string' ? metadata.decision : null
+    const decision: PupilDuplicateDecision | null =
+      rawDecision === 'DIFFERENT' || rawDecision === 'SAME' || rawDecision === 'MERGED'
+        ? rawDecision
+        : row.action === 'PUPIL_MERGED'
+          ? 'MERGED'
+          : row.action === 'PUPIL_DUPLICATE_MARKED_SAME'
+            ? 'SAME'
+            : 'DIFFERENT'
+
+    decisions.set(key, {
+      decision,
+      decidedAt: row.createdAt.toISOString(),
+      decidedByUserId: row.actorUserId,
+      note: typeof metadata.note === 'string' ? metadata.note : null,
+    })
+  }
+
+  return decisions
+}
+
+function pupilIdentitySnapshot(pupil: PupilIdentityLike) {
+  return {
+    id: pupil.id,
+    fullName: displayPupilName(pupil),
+    firstName: pupil.firstName,
+    lastName: pupil.lastName,
+    otherNames: pupil.otherNames ?? null,
+    admissionNumber: normalizePupilAdmissionNumber(pupil.admissionNumber),
+    status: pupil.status,
+    currentClassId: pupil.currentClassId ?? null,
+    currentClassName: pupil.currentClassName ?? null,
+  }
+}
+
+function pupilConflictError(input: {
+  conflict: PupilConflictCandidate
+  requiresConfirmation: boolean
+  nameKey: string
+  admissionNumber: string
+}): HttpError {
+  const meta = {
+    category: input.conflict.category,
+    requiresConfirmation: input.requiresConfirmation,
+    nameKey: input.nameKey,
+    admissionNumber: normalizePupilAdmissionNumber(input.admissionNumber),
+    existingPupil: pupilIdentitySnapshot(input.conflict.pupil),
+  }
+
+  if (input.conflict.category === 'EXACT_DUPLICATE') {
+    return new HttpError(
+      409,
+      'A pupil with this exact name and admission number already exists in this school.',
+      undefined,
+      'PUPIL_DUPLICATE_EXACT',
+      meta,
+    )
+  }
+
+  if (input.conflict.category === 'ADMISSION_CONFLICT') {
+    return new HttpError(
+      409,
+      'This admission number is already assigned to a different pupil in this school.',
+      undefined,
+      'PUPIL_DUPLICATE_ADMISSION',
+      meta,
+    )
+  }
+
+  return new HttpError(
+    409,
+    'A pupil with this exact name already exists in this school, but has a different admission number. Are these records for the same pupil?',
+    undefined,
+    'PUPIL_DUPLICATE_NAME',
+    meta,
+  )
+}
+
+interface PupilIdentityInput {
+  firstName: string
+  lastName: string
+  otherNames?: string | null
+  admissionNumber: string
+}
+
+/**
+ * Applies the duplicate rules to one create or update inside its transaction.
+ * A blocking conflict throws a structured 409. A same-name conflict asks the
+ * caller to confirm; a confirmed pair is recorded so it is not asked again.
+ */
+async function enforcePupilConflicts(input: {
+  tx: Tx
+  schoolId: string
+  audit: AuditContext
+  identity: PupilIdentityInput
+  excludePupilId?: string | null
+  confirmDifferentPupil?: boolean
+  duplicateOfPupilId?: string | null
+}): Promise<void> {
+  const nameKey = normalizePupilName(input.identity)
+
+  await acquirePupilLock(input.tx, `pupil-name:${input.schoolId}:${nameKey}`)
+
+  const candidates = await loadPupilIdentities(input.tx, input.schoolId)
+  const decisions = await loadPupilDecisions(input.tx, input.schoolId)
+  const conflicts = findPupilConflicts({
+    nameKey,
+    admissionNumber: input.identity.admissionNumber,
+    candidates,
+    excludePupilId: input.excludePupilId ?? null,
+  })
+  const resolution = resolvePupilConflict({
+    conflicts,
+    decisions,
+    nameKey,
+    admissionNumber: input.identity.admissionNumber,
+    confirmedPupilId: input.confirmDifferentPupil
+      ? (input.duplicateOfPupilId ?? null)
+      : null,
+  })
+
+  if (resolution.blocking) {
+    throw pupilConflictError({
+      conflict: resolution.blocking,
+      requiresConfirmation: resolution.requiresConfirmation,
+      nameKey,
+      admissionNumber: input.identity.admissionNumber,
+    })
+  }
+
+  if (input.confirmDifferentPupil && resolution.confirmedCandidate) {
+    await recordAudit(
+      input.tx,
+      input.schoolId,
+      input.audit,
+      'PUPIL_DUPLICATE_MARKED_DIFFERENT',
+      'Pupil',
+      resolution.confirmedCandidate.id,
+      {
+        nameKey,
+        admissionNumbers: [
+          normalizePupilAdmissionNumber(input.identity.admissionNumber),
+          normalizePupilAdmissionNumber(
+            resolution.confirmedCandidate.admissionNumber,
+          ),
+        ],
+        primaryPupilId: resolution.confirmedCandidate.id,
+        duplicatePupilId: null,
+        decision: 'DIFFERENT',
+        note: 'Confirmed as different pupils during registration or edit.',
+      },
+    )
+  }
+}
+
+async function findPupilDetailOrThrow(
+  tx: Tx,
+  schoolId: string,
+  pupilId: string,
+) {
+  const pupil = await tx.pupil.findFirst({
+    where: { id: pupilId, schoolId },
+    include: {
+      currentClass: { select: { name: true } },
+      enrollments: {
+        include: {
+          class: { select: { name: true } },
+          academicYear: { select: { name: true } },
+        },
+        orderBy: [{ startedOn: 'desc' }, { createdAt: 'desc' }],
+      },
+    },
+  })
+
+  if (!pupil) {
+    throw new HttpError(404, 'Pupil not found')
+  }
+
+  return {
+    ...mapPupil(pupil),
+    enrollments: pupil.enrollments.map(mapEnrollment),
+  }
+}
+
+const PUPIL_STATUS_RANK: Record<PupilRecord['status'], number> = {
+  ARCHIVED: 0,
+  INACTIVE: 1,
+  ACTIVE: 2,
+}
+
+/**
+ * The retained record keeps the strongest status of the two records so a merge
+ * can never silently archive an active pupil.
+ */
+function strongestPupilStatus(
+  left: PupilRecord['status'],
+  right: PupilRecord['status'],
+): PupilRecord['status'] {
+  return PUPIL_STATUS_RANK[left] >= PUPIL_STATUS_RANK[right] ? left : right
+}
+
+interface PupilMergePlan {
+  preview: PupilMergePreviewRecord
+  nameKey: string
+  duplicateStatus: PupilRecord['status']
+  duplicateCurrentClassId: string | null
+  enrollmentTransferIds: string[]
+  subjectScoreTransferIds: string[]
+  assessmentTransferIds: string[]
+  reportInputTransferIds: string[]
+  reportCardTransferIds: string[]
+  reportFailureIds: string[]
+  invoicePupilTransferIds: string[]
+}
+
+/**
+ * Builds the read-only merge plan used by both the preview endpoint and the
+ * merge transaction. It never mutates data.
+ */
+async function planPupilMerge(
+  tx: Tx,
+  schoolId: string,
+  primaryPupilId: string,
+  duplicatePupilId: string,
+): Promise<PupilMergePlan> {
+  if (primaryPupilId === duplicatePupilId) {
+    throw new HttpError(400, 'Choose two different pupil records')
+  }
+
+  const [primary, duplicate] = await Promise.all([
+    tx.pupil.findFirst({
+      where: { id: primaryPupilId, schoolId },
+      include: { currentClass: { select: { name: true } } },
+    }),
+    tx.pupil.findFirst({
+      where: { id: duplicatePupilId, schoolId },
+      include: { currentClass: { select: { name: true } } },
+    }),
+  ])
+
+  if (!primary || !duplicate) {
+    throw new HttpError(
+      404,
+      'One or both pupil records were not found in this school',
+    )
+  }
+
+  const nameKey = normalizePupilName(primary)
+
+  if (normalizePupilName(duplicate) !== nameKey) {
+    throw new HttpError(
+      409,
+      'Only pupil records with the exact same name can be merged',
+    )
+  }
+
+  // Definite duplicates share an admission number, so an equal value is not a
+  // reason to block a merge. The unique constraint normally prevents two
+  // identical rows; when the values differ only by case the archive keeps the
+  // original value and the retained record keeps the other one.
+
+  const conflicts: PupilMergeConflictRecord[] = []
+
+  // Enrollments are transferred unless the retained pupil already has an
+  // enrollment for the same class and academic year, or would end up with a
+  // second active enrollment. Anything not transferred is withdrawn on the
+  // archived record instead of deleted.
+  const [duplicateEnrollments, primaryEnrollments] = await Promise.all([
+    tx.pupilEnrollment.findMany({
+      where: { schoolId, pupilId: duplicate.id },
+      select: {
+        id: true,
+        classId: true,
+        academicYearId: true,
+        status: true,
+      },
+      orderBy: [{ startedOn: 'desc' }, { createdAt: 'desc' }],
+    }),
+    tx.pupilEnrollment.findMany({
+      where: { schoolId, pupilId: primary.id },
+      select: { classId: true, academicYearId: true, status: true },
+    }),
+  ])
+  const primaryEnrollmentKeys = new Set(
+    primaryEnrollments.map(
+      (enrollment) => `${enrollment.classId}:${enrollment.academicYearId}`,
+    ),
+  )
+  let primaryHasActiveEnrollment = primaryEnrollments.some(
+    (enrollment) => enrollment.status === 'ACTIVE',
+  )
+  const enrollmentTransferIds: string[] = []
+  const seenEnrollmentKeys = new Set<string>()
+
+  for (const enrollment of duplicateEnrollments) {
+    const key = `${enrollment.classId}:${enrollment.academicYearId}`
+
+    if (primaryEnrollmentKeys.has(key) || seenEnrollmentKeys.has(key)) {
+      continue
+    }
+
+    if (enrollment.status === 'ACTIVE' && primaryHasActiveEnrollment) {
+      // Keep a single active enrollment. The duplicate's active row stays on
+      // the archived record and is withdrawn below.
+      continue
+    }
+
+    seenEnrollmentKeys.add(key)
+    enrollmentTransferIds.push(enrollment.id)
+
+    if (enrollment.status === 'ACTIVE') {
+      primaryHasActiveEnrollment = true
+    }
+  }
+
+  // Subject scores: unique on (school, term, pupil, subject).
+  const [duplicateScores, primaryScores] = await Promise.all([
+    tx.pupilSubjectScore.findMany({
+      where: { schoolId, pupilId: duplicate.id },
+      select: { id: true, academicTermId: true, subjectId: true },
+    }),
+    tx.pupilSubjectScore.findMany({
+      where: { schoolId, pupilId: primary.id },
+      select: { academicTermId: true, subjectId: true },
+    }),
+  ])
+  const primaryScoreKeys = new Set(
+    primaryScores.map((score) => `${score.academicTermId}:${score.subjectId}`),
+  )
+  const subjectScoreTransferIds: string[] = []
+  const seenScoreConflicts = new Set<string>()
+
+  for (const score of duplicateScores) {
+    const key = `${score.academicTermId}:${score.subjectId}`
+
+    if (primaryScoreKeys.has(key)) {
+      if (!seenScoreConflicts.has(key)) {
+        seenScoreConflicts.add(key)
+        conflicts.push({
+          area: 'PUPIL_SUBJECT_SCORE',
+          key,
+          message:
+            'Both records have a subject score for the same term and subject.',
+        })
+      }
+      continue
+    }
+
+    subjectScoreTransferIds.push(score.id)
+  }
+
+  const assessmentTransferIds = subjectScoreTransferIds.length
+    ? (
+        await tx.assessmentScore.findMany({
+          where: {
+            schoolId,
+            pupilId: duplicate.id,
+            pupilSubjectScoreId: { in: subjectScoreTransferIds },
+          },
+          select: { id: true },
+        })
+      ).map((row) => row.id)
+    : []
+
+  // Report inputs: unique on (school, term, pupil).
+  const [duplicateInputs, primaryInputs] = await Promise.all([
+    tx.reportInput.findMany({
+      where: { schoolId, pupilId: duplicate.id },
+      select: { id: true, academicTermId: true },
+    }),
+    tx.reportInput.findMany({
+      where: { schoolId, pupilId: primary.id },
+      select: { academicTermId: true },
+    }),
+  ])
+  const primaryInputTerms = new Set(
+    primaryInputs.map((input) => input.academicTermId),
+  )
+  const reportInputTransferIds: string[] = []
+
+  for (const input of duplicateInputs) {
+    if (primaryInputTerms.has(input.academicTermId)) {
+      conflicts.push({
+        area: 'REPORT_INPUT',
+        key: input.academicTermId,
+        message:
+          'Both records have report input data for the same term.',
+      })
+      continue
+    }
+
+    reportInputTransferIds.push(input.id)
+  }
+
+  // Report cards: unique on (school, term, pupil).
+  const [duplicateCards, primaryCards] = await Promise.all([
+    tx.reportCard.findMany({
+      where: { schoolId, pupilId: duplicate.id },
+      select: { id: true, academicTermId: true },
+    }),
+    tx.reportCard.findMany({
+      where: { schoolId, pupilId: primary.id },
+      select: { academicTermId: true },
+    }),
+  ])
+  const primaryCardTerms = new Set(
+    primaryCards.map((card) => card.academicTermId),
+  )
+  const reportCardTransferIds: string[] = []
+
+  for (const card of duplicateCards) {
+    if (primaryCardTerms.has(card.academicTermId)) {
+      conflicts.push({
+        area: 'REPORT_CARD',
+        key: card.academicTermId,
+        message: 'Both records have a report card for the same term.',
+      })
+      continue
+    }
+
+    reportCardTransferIds.push(card.id)
+  }
+
+  const reportFailureIds = (
+    await tx.reportGenerationFailure.findMany({
+      where: { schoolId, pupilId: duplicate.id },
+      select: { id: true },
+    })
+  ).map((row) => row.id)
+
+  // Invoice pupils: a pupil can appear once per invoice. If both records are
+  // billed on the same invoice the merge is blocked for manual review.
+  const [duplicateInvoicePupils, primaryInvoicePupils] = await Promise.all([
+    tx.invoicePupil.findMany({
+      where: { schoolId, pupilId: duplicate.id },
+      select: { id: true, invoiceId: true },
+    }),
+    tx.invoicePupil.findMany({
+      where: { schoolId, pupilId: primary.id },
+      select: { invoiceId: true },
+    }),
+  ])
+  const primaryInvoiceIds = new Set(
+    primaryInvoicePupils.map((row) => row.invoiceId),
+  )
+  const invoicePupilTransferIds: string[] = []
+  const seenInvoiceConflicts = new Set<string>()
+
+  for (const row of duplicateInvoicePupils) {
+    if (primaryInvoiceIds.has(row.invoiceId)) {
+      if (!seenInvoiceConflicts.has(row.invoiceId)) {
+        seenInvoiceConflicts.add(row.invoiceId)
+        conflicts.push({
+          area: 'INVOICE',
+          key: row.invoiceId,
+          message: 'Both records are billed on the same invoice.',
+        })
+      }
+      continue
+    }
+
+    invoicePupilTransferIds.push(row.id)
+  }
+
+  return {
+    preview: {
+      primaryPupil: mapPupil(primary),
+      duplicatePupil: mapPupil(duplicate),
+      canMerge: conflicts.length === 0,
+      transferable: {
+        enrollments: enrollmentTransferIds.length,
+        subjectScores: subjectScoreTransferIds.length,
+        assessmentScores: assessmentTransferIds.length,
+        reportInputs: reportInputTransferIds.length,
+        reportCards: reportCardTransferIds.length,
+        reportFailures: reportFailureIds.length,
+        invoicePupils: invoicePupilTransferIds.length,
+      },
+      conflicts,
+    },
+    nameKey,
+    duplicateStatus: duplicate.status,
+    duplicateCurrentClassId: duplicate.currentClassId,
+    enrollmentTransferIds,
+    subjectScoreTransferIds,
+    assessmentTransferIds,
+    reportInputTransferIds,
+    reportCardTransferIds,
+    reportFailureIds,
+    invoicePupilTransferIds,
+  }
+}
+
 export function createPrismaSchoolRepository(): SchoolRepository {
   return {
     async getSchoolProfile(schoolId: string): Promise<SchoolProfile | null> {
@@ -1259,6 +1900,115 @@ export function createPrismaSchoolRepository(): SchoolRepository {
       })
 
       return school ? mapSchool(school) : null
+    },
+
+    async getSchoolSessionSettings(schoolId) {
+      const prisma = getPrismaClient()
+
+      const [school, currentYear] = await Promise.all([
+        prisma.school.findUnique({
+          where: { id: schoolId },
+          select: {
+            id: true,
+            name: true,
+            reopeningDate: true,
+            closingDate: true,
+          },
+        }),
+        prisma.academicYear.findFirst({
+          where: { schoolId, isCurrent: true },
+          select: { name: true },
+          orderBy: { startsOn: 'desc' },
+        }),
+      ])
+
+      if (!school) {
+        return null
+      }
+
+      const lastUpdate = await prisma.auditLog.findFirst({
+        where: { schoolId, action: 'SCHOOL_SESSION_UPDATED' },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          createdAt: true,
+          actorUserId: true,
+          actor: { select: { firstName: true, lastName: true } },
+        },
+      })
+
+      return {
+        schoolId: school.id,
+        schoolName: school.name,
+        currentAcademicYearName: currentYear?.name ?? null,
+        reopeningDate: school.reopeningDate ? dateOnly(school.reopeningDate) : null,
+        closingDate: school.closingDate ? dateOnly(school.closingDate) : null,
+        lastUpdatedAt: lastUpdate?.createdAt ?? null,
+        lastUpdatedByUserId: lastUpdate?.actorUserId ?? null,
+        lastUpdatedByName: lastUpdate?.actor
+          ? [lastUpdate.actor.firstName, lastUpdate.actor.lastName]
+              .filter(Boolean)
+              .join(' ')
+          : null,
+      }
+    },
+
+    async updateSchoolSessionSettings(schoolId, input, audit) {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const existing = await findSchoolOrThrow(tx, schoolId)
+        const reopeningDate = parseDate(input.reopeningDate)
+        const closingDate = parseDate(input.closingDate)
+
+        if (closingDate <= reopeningDate) {
+          throw new HttpError(
+            400,
+            'The closing date must be later than the reopening date',
+          )
+        }
+
+        await tx.school.update({
+          where: { id: schoolId },
+          data: { reopeningDate, closingDate },
+        })
+
+        await recordAudit(
+          tx,
+          schoolId,
+          audit,
+          'SCHOOL_SESSION_UPDATED',
+          'School',
+          schoolId,
+          {
+            previousReopeningDate: existing.reopeningDate
+              ? dateOnly(existing.reopeningDate)
+              : null,
+            previousClosingDate: existing.closingDate
+              ? dateOnly(existing.closingDate)
+              : null,
+            reopeningDate: dateOnly(reopeningDate),
+            closingDate: dateOnly(closingDate),
+          },
+        )
+
+        return {
+          schoolId,
+          schoolName: existing.name,
+          currentAcademicYearName:
+            (
+              await tx.academicYear.findFirst({
+                where: { schoolId, isCurrent: true },
+                select: { name: true },
+                orderBy: { startsOn: 'desc' },
+              })
+            )?.name ?? null,
+          reopeningDate: dateOnly(reopeningDate),
+          closingDate: dateOnly(closingDate),
+          lastUpdatedAt: new Date(),
+          lastUpdatedByUserId: audit.actorUserId,
+          lastUpdatedByName: null,
+        }
+      })
     },
 
     async getSchoolLogo(schoolId: string) {
@@ -2859,6 +3609,20 @@ export function createPrismaSchoolRepository(): SchoolRepository {
             await findYearOrThrow(tx, schoolId, input.academicYearId!)
           }
 
+          await enforcePupilConflicts({
+            tx,
+            schoolId,
+            audit,
+            identity: {
+              firstName: input.firstName,
+              lastName: input.lastName,
+              otherNames: input.otherNames ?? null,
+              admissionNumber: input.admissionNumber,
+            },
+            confirmDifferentPupil: input.confirmDifferentPupil,
+            duplicateOfPupilId: input.duplicateOfPupilId,
+          })
+
           const pupil = await tx.pupil.create({
             data: {
               schoolId,
@@ -2941,23 +3705,42 @@ export function createPrismaSchoolRepository(): SchoolRepository {
             throw new HttpError(404, 'Pupil not found')
           }
 
+          const identity: PupilIdentityInput = {
+            firstName:
+              input.firstName === undefined
+                ? existing.firstName
+                : normalizeName(input.firstName),
+            lastName:
+              input.lastName === undefined
+                ? existing.lastName
+                : normalizeName(input.lastName),
+            otherNames:
+              input.otherNames === undefined
+                ? existing.otherNames
+                : input.otherNames,
+            admissionNumber:
+              input.admissionNumber === undefined
+                ? existing.admissionNumber
+                : normalizeAdmissionNumber(input.admissionNumber),
+          }
+
+          await enforcePupilConflicts({
+            tx,
+            schoolId,
+            audit,
+            identity,
+            excludePupilId: pupilId,
+            confirmDifferentPupil: input.confirmDifferentPupil,
+            duplicateOfPupilId: input.duplicateOfPupilId,
+          })
+
           await tx.pupil.update({
             where: { id: pupilId },
             data: {
-              firstName:
-                input.firstName === undefined
-                  ? undefined
-                  : normalizeName(input.firstName),
-              lastName:
-                input.lastName === undefined
-                  ? undefined
-                  : normalizeName(input.lastName),
-              otherNames:
-                input.otherNames === undefined ? undefined : input.otherNames,
-              admissionNumber:
-                input.admissionNumber === undefined
-                  ? undefined
-                  : normalizeAdmissionNumber(input.admissionNumber),
+              firstName: identity.firstName,
+              lastName: identity.lastName,
+              otherNames: identity.otherNames,
+              admissionNumber: identity.admissionNumber,
               gender: input.gender === undefined ? undefined : input.gender,
               dateOfBirth:
                 input.dateOfBirth === undefined
@@ -3136,6 +3919,314 @@ export function createPrismaSchoolRepository(): SchoolRepository {
         return {
           ...mapPupil(updated),
           enrollments: updated.enrollments.map(mapEnrollment),
+        }
+      })
+    },
+
+    async listPupilDuplicates(schoolId, filter = {}) {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const identities = await loadPupilIdentities(tx, schoolId)
+        const decisions = await loadPupilDecisions(tx, schoolId)
+        const audit = groupPupilDuplicates(identities, decisions)
+
+        return filterPupilDuplicateGroups(audit, filter)
+      })
+    },
+
+    async recordPupilDuplicateDecision(schoolId, input, audit) {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        if (input.primaryPupilId === input.duplicatePupilId) {
+          throw new HttpError(400, 'Choose two different pupil records')
+        }
+
+        const pupils = await tx.pupil.findMany({
+          where: {
+            schoolId,
+            id: { in: [input.primaryPupilId, input.duplicatePupilId] },
+          },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            otherNames: true,
+            admissionNumber: true,
+          },
+        })
+
+        if (pupils.length !== 2) {
+          throw new HttpError(
+            404,
+            'One or both pupil records were not found in this school',
+          )
+        }
+
+        const primary = pupils.find(
+          (pupil) => pupil.id === input.primaryPupilId,
+        )!
+        const duplicate = pupils.find(
+          (pupil) => pupil.id === input.duplicatePupilId,
+        )!
+
+        const nameKey = normalizePupilName(primary)
+
+        if (normalizePupilName(duplicate) !== nameKey) {
+          throw new HttpError(
+            409,
+            'These records do not share the same exact name and cannot be marked as the same pupil',
+          )
+        }
+
+        const admissionNumbers = [
+          normalizePupilAdmissionNumber(primary.admissionNumber),
+          normalizePupilAdmissionNumber(duplicate.admissionNumber),
+        ].sort() as [string, string]
+
+        if (admissionNumbers[0] === admissionNumbers[1]) {
+          throw new HttpError(
+            409,
+            'These records share an admission number. Correct the admission number before recording a decision.',
+          )
+        }
+
+        await acquirePupilLock(
+          tx,
+          `pupil-decision:${schoolId}:${[input.primaryPupilId, input.duplicatePupilId]
+            .sort()
+            .join(':')}`,
+        )
+
+        await recordAudit(
+          tx,
+          schoolId,
+          audit,
+          input.decision === 'DIFFERENT'
+            ? 'PUPIL_DUPLICATE_MARKED_DIFFERENT'
+            : 'PUPIL_DUPLICATE_MARKED_SAME',
+          'Pupil',
+          input.duplicatePupilId,
+          {
+            nameKey,
+            admissionNumbers,
+            primaryPupilId: input.primaryPupilId,
+            duplicatePupilId: input.duplicatePupilId,
+            decision: input.decision,
+            note: input.note ?? null,
+          },
+        )
+
+        return {
+          decision: input.decision,
+          primaryPupilId: input.primaryPupilId,
+          duplicatePupilId: input.duplicatePupilId,
+          nameKey,
+          admissionNumbers,
+        }
+      })
+    },
+
+    async previewPupilMerge(schoolId, primaryPupilId, duplicatePupilId) {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const plan = await planPupilMerge(
+          tx,
+          schoolId,
+          primaryPupilId,
+          duplicatePupilId,
+        )
+
+        return plan.preview
+      })
+    },
+
+    async mergePupils(schoolId, input, audit) {
+      const prisma = getPrismaClient()
+
+      return prisma.$transaction(async (tx) => {
+        const idPair = [input.primaryPupilId, input.duplicatePupilId]
+          .sort()
+          .join(':')
+
+        await acquirePupilLock(tx, `pupil-merge:${schoolId}:${idPair}`)
+
+        // Take the same name locks used by registration and edits, in a stable
+        // order, so a concurrent create/rename cannot change the conflict
+        // picture while the merge is running.
+        const identityRows = await tx.pupil.findMany({
+          where: {
+            schoolId,
+            id: { in: [input.primaryPupilId, input.duplicatePupilId] },
+          },
+          select: { firstName: true, lastName: true, otherNames: true },
+        })
+        const mergeNameKeys = [
+          ...new Set(identityRows.map((row) => normalizePupilName(row))),
+        ].sort()
+
+        for (const nameKey of mergeNameKeys) {
+          await acquirePupilLock(tx, `pupil-name:${schoolId}:${nameKey}`)
+        }
+
+        const plan = await planPupilMerge(
+          tx,
+          schoolId,
+          input.primaryPupilId,
+          input.duplicatePupilId,
+        )
+
+        if (!plan.preview.canMerge) {
+          throw new HttpError(
+            409,
+            'This merge needs manual review before it can continue.',
+            undefined,
+            'PUPIL_MERGE_CONFLICTS',
+            {
+              primaryPupilId: input.primaryPupilId,
+              duplicatePupilId: input.duplicatePupilId,
+              conflicts: plan.preview.conflicts,
+            },
+          )
+        }
+
+        const primaryId = input.primaryPupilId
+        const duplicateId = input.duplicatePupilId
+        const today = parseDate(new Date().toISOString().slice(0, 10))
+
+        if (plan.enrollmentTransferIds.length > 0) {
+          await tx.pupilEnrollment.updateMany({
+            where: { schoolId, id: { in: plan.enrollmentTransferIds } },
+            data: { pupilId: primaryId },
+          })
+        }
+
+        // Anything left on the duplicate is a duplicate academic row. It stays
+        // with the archived record for history and is withdrawn, not deleted.
+        await tx.pupilEnrollment.updateMany({
+          where: { schoolId, pupilId: duplicateId, status: 'ACTIVE' },
+          data: { status: 'WITHDRAWN', endedOn: today },
+        })
+
+        if (plan.subjectScoreTransferIds.length > 0) {
+          await tx.pupilSubjectScore.updateMany({
+            where: { schoolId, id: { in: plan.subjectScoreTransferIds } },
+            data: { pupilId: primaryId },
+          })
+        }
+
+        if (plan.assessmentTransferIds.length > 0) {
+          await tx.assessmentScore.updateMany({
+            where: { schoolId, id: { in: plan.assessmentTransferIds } },
+            data: { pupilId: primaryId },
+          })
+        }
+
+        if (plan.reportInputTransferIds.length > 0) {
+          await tx.reportInput.updateMany({
+            where: { schoolId, id: { in: plan.reportInputTransferIds } },
+            data: { pupilId: primaryId },
+          })
+        }
+
+        if (plan.reportCardTransferIds.length > 0) {
+          await tx.reportCard.updateMany({
+            where: { schoolId, id: { in: plan.reportCardTransferIds } },
+            data: { pupilId: primaryId },
+          })
+        }
+
+        if (plan.reportFailureIds.length > 0) {
+          await tx.reportGenerationFailure.updateMany({
+            where: { schoolId, id: { in: plan.reportFailureIds } },
+            data: { pupilId: primaryId },
+          })
+        }
+
+        if (plan.invoicePupilTransferIds.length > 0) {
+          await tx.invoicePupil.updateMany({
+            where: { schoolId, id: { in: plan.invoicePupilTransferIds } },
+            data: { pupilId: primaryId },
+          })
+        }
+
+        const retainedStatus = strongestPupilStatus(
+          plan.preview.primaryPupil.status,
+          plan.duplicateStatus,
+        )
+        const activeEnrollment =
+          retainedStatus === 'ARCHIVED'
+            ? null
+            : await tx.pupilEnrollment.findFirst({
+                where: { schoolId, pupilId: primaryId, status: 'ACTIVE' },
+                orderBy: [{ startedOn: 'desc' }, { createdAt: 'desc' }],
+                select: { classId: true },
+              })
+
+        await tx.pupil.update({
+          where: { id: primaryId },
+          data: {
+            status: retainedStatus,
+            currentClassId:
+              activeEnrollment?.classId ??
+              (retainedStatus === 'ARCHIVED'
+                ? null
+                : (plan.preview.primaryPupil.currentClassId ??
+                  plan.duplicateCurrentClassId)),
+          },
+        })
+
+        await tx.pupil.update({
+          where: { id: duplicateId },
+          data: { status: 'ARCHIVED', currentClassId: null },
+        })
+
+        await recordAudit(
+          tx,
+          schoolId,
+          audit,
+          'PUPIL_MERGED',
+          'Pupil',
+          primaryId,
+          {
+            nameKey: plan.nameKey,
+            admissionNumbers: [
+              normalizePupilAdmissionNumber(
+                plan.preview.primaryPupil.admissionNumber,
+              ),
+              normalizePupilAdmissionNumber(
+                plan.preview.duplicatePupil.admissionNumber,
+              ),
+            ],
+            primaryPupilId: primaryId,
+            duplicatePupilId: duplicateId,
+            decision: 'MERGED',
+            note: input.note ?? null,
+            transferred: plan.preview.transferable,
+          },
+        )
+
+        await recordAudit(
+          tx,
+          schoolId,
+          audit,
+          'PUPIL_ARCHIVED',
+          'Pupil',
+          duplicateId,
+          {
+            admissionNumber: plan.preview.duplicatePupil.admissionNumber,
+            mergedIntoPupilId: primaryId,
+          },
+        )
+
+        const updated = await findPupilDetailOrThrow(tx, schoolId, primaryId)
+
+        return {
+          primaryPupil: updated,
+          archivedPupilId: duplicateId,
+          transferred: plan.preview.transferable,
         }
       })
     },
@@ -4388,6 +5479,7 @@ export function createPrismaSchoolRepository(): SchoolRepository {
       const invitations = await prisma.subjectTeacherInvitation.findMany({
         where: { schoolId, classId },
         include: {
+          school: { select: { closingDate: true } },
           class: { select: { name: true } },
           subject: { select: { name: true } },
           assignment: {
